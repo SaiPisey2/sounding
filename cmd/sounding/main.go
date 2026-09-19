@@ -192,18 +192,7 @@ func score(ctx context.Context, act model.Action, kubeconfig, snapshotDir string
 		return model.Finding{}, fmt.Errorf("%w: enumerating namespace %q: %v", errOperational, ns, err)
 	}
 
-	effects := make([]model.Effect, 0, len(objs))
-	for _, o := range objs {
-		effects = append(effects, model.Effect{
-			Kind:  "destroys",
-			Basis: model.BasisComputed,
-			Object: model.Target{
-				Group: o.Target.Group, Version: o.Target.Version, Resource: o.Target.Resource,
-				Kind: o.Target.Kind, Namespace: o.Target.Namespace, Name: o.Target.Name,
-			},
-			Explanation: "in the namespace",
-		})
-	}
+	effects := destroyEffectsFromObjects(objs)
 
 	volEffects, volClass, err := volume.Join(ctx, c, objs)
 	if err != nil {
@@ -359,6 +348,41 @@ func writeJSON(w io.Writer, f model.Finding) error {
 		Scanned:  f.Scanned,
 		APICalls: f.APICalls,
 	})
+}
+
+// destroyEffectsFromObjects converts a namespace's enumerated objects into
+// "destroys" effects, owner-first. It orders objs itself, via
+// cascade.Order, rather than trusting the caller to have already done so:
+// cascade.Enumerate's own output order is whatever
+// cluster.ListableNamespaced's resource list happens to be in, sorted
+// lexicographically by GroupVersionResource string -- and "" (the core
+// group) sorts before "apps", so on a real namespace a Pod would print
+// before the Deployment that owns it, and the report's effect cap would
+// push the actual owner chain out of what a reader ever sees. This mirrors
+// what snapshot.Write already does to the same objects when writing the
+// restore ordering; without it the report and the undo bundle disagree
+// about the same cascade.
+//
+// Pulling this into its own function, separate from cascade.Order's own
+// exhaustive test suite, is what lets a test pin that the ORDERING CALL
+// actually happens here -- cascade.Order can be perfectly correct and
+// still never get invoked, and nothing in cascade's own tests can catch
+// that, because they call Order directly.
+func destroyEffectsFromObjects(objs []cascade.Object) []model.Effect {
+	ordered := cascade.Order(objs)
+	effects := make([]model.Effect, 0, len(ordered))
+	for _, o := range ordered {
+		effects = append(effects, model.Effect{
+			Kind:  "destroys",
+			Basis: model.BasisComputed,
+			Object: model.Target{
+				Group: o.Target.Group, Version: o.Target.Version, Resource: o.Target.Resource,
+				Kind: o.Target.Kind, Namespace: o.Target.Namespace, Name: o.Target.Name,
+			},
+			Explanation: "in the namespace",
+		})
+	}
+	return effects
 }
 
 // excludedFromEffects lists, in the words the undo bundle's NOT-RESTORED.txt

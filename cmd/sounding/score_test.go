@@ -8,9 +8,12 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/SaiPisey2/sounding/internal/cascade"
 	"github.com/SaiPisey2/sounding/internal/cluster"
 	"github.com/SaiPisey2/sounding/internal/model"
+	"github.com/SaiPisey2/sounding/internal/report"
 )
 
 // model.Classify only ever raises a finding to the floor its weakest
@@ -64,6 +67,48 @@ func TestClassifyRefusesAVerbWithNoFloorDefined(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "scale") {
 		t.Errorf("error must name the verb: %v", err)
+	}
+}
+
+// This is the exact bug a live-cluster run surfaced: cascade.Enumerate's
+// own output order is whatever cluster.ListableNamespaced's resource list
+// happens to be in -- sorted lexicographically by GroupVersionResource
+// string, so the core group ("") sorts ahead of "apps" -- not cascade
+// order. cascade.Order itself is exhaustively tested and every one of
+// those tests keeps passing whether or not anything actually calls it; the
+// only way to catch a dropped call is to check what the command renders.
+// The fixture below is deliberately built out of cascade order -- child
+// before parent before grandparent -- because that is the shape Enumerate
+// actually produces against a real cluster, not an arbitrary shuffle.
+func TestRenderedReportListsOwnerBeforeOwned(t *testing.T) {
+	dep := types.UID("dep-1")
+	rs := types.UID("rs-1")
+	pod := types.UID("pod-1")
+	objs := []cascade.Object{
+		{Target: model.Target{Kind: "Pod", Name: "web-1"}, UID: pod, Owners: []types.UID{rs}},
+		{Target: model.Target{Kind: "ReplicaSet", Name: "web"}, UID: rs, Owners: []types.UID{dep}},
+		{Target: model.Target{Kind: "Deployment", Name: "web"}, UID: dep},
+	}
+
+	effects := destroyEffectsFromObjects(objs)
+	act := model.Action{Verb: "delete", Target: model.Target{Resource: "namespaces", Name: "prod"}}
+	finding, err := classify(act, effects, model.ClassRead)
+	if err != nil {
+		t.Fatalf("classify errored: %v", err)
+	}
+
+	var b bytes.Buffer
+	report.Write(&b, finding)
+	s := b.String()
+
+	depIdx := strings.Index(s, "Deployment/web")
+	rsIdx := strings.Index(s, "ReplicaSet/web")
+	podIdx := strings.Index(s, "Pod/web-1")
+	if depIdx < 0 || rsIdx < 0 || podIdx < 0 {
+		t.Fatalf("rendered report is missing an expected object:\n%s", s)
+	}
+	if !(depIdx < rsIdx && rsIdx < podIdx) {
+		t.Errorf("want Deployment before ReplicaSet before Pod in the rendered report, got:\n%s", s)
 	}
 }
 
