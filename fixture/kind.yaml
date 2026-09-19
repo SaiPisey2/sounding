@@ -1,0 +1,9 @@
+# A single control-plane node is enough: this fixture never schedules real
+# workloads that need capacity, it only needs objects to exist so that
+# discovery and enumeration have something real to walk. The cluster name is
+# passed on the command line (see Makefile), not here, so the same file
+# cannot be applied twice under two names by accident.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane

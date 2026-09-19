@@ -1,0 +1,51 @@
+# PersistentVolumes are cluster-scoped, which is exactly why internal/volume
+# exists: enumerating a namespace never lists these on its own. hostPath is
+# used so binding needs no CSI driver -- each PV gets its own
+# storageClassName so the control plane's default binder cannot pair a claim
+# with the wrong PV; there is no dynamic provisioner registered for any of
+# these class names, so binding only ever happens statically, against the
+# one PV that names the same class.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-retain
+  labels:
+    sounding.dev/fixture: "true"
+spec:
+  capacity:
+    storage: 1Mi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: sounding-retain
+  hostPath:
+    path: /tmp/sounding-fixture/pv-retain
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-delete
+  labels:
+    sounding.dev/fixture: "true"
+spec:
+  capacity:
+    storage: 1Mi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: sounding-delete
+  hostPath:
+    path: /tmp/sounding-fixture/pv-delete
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-retain-only
+  labels:
+    sounding.dev/fixture: "true"
+spec:
+  capacity:
+    storage: 1Mi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: sounding-retain-only
+  hostPath:
+    path: /tmp/sounding-fixture/pv-retain-only

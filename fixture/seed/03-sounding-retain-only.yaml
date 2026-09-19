@@ -1,0 +1,17 @@
+# The negative case for the Retain/Delete flip: every PV this namespace
+# touches is Retain, so TestRetainOnlyNamespaceIsCompensable must see
+# COMPENSABLE, not TERMINAL -- the same join in internal/volume, the other
+# reclaim policy.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+  namespace: sounding-retain-only
+  labels:
+    sounding.dev/fixture: "true"
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: sounding-retain-only
+  resources:
+    requests:
+      storage: 1Mi

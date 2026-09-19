@@ -1,0 +1,12 @@
+# Applied by `make demo-up` only after widgets.sounding.dev is registered
+# and Established -- see the Makefile and fixture/crd/widget-crd.yaml. A
+# namespaced custom resource, scored the same way as any built-in kind.
+apiVersion: sounding.dev/v1
+kind: Widget
+metadata:
+  name: demo-widget
+  namespace: sounding-crd
+  labels:
+    sounding.dev/fixture: "true"
+spec:
+  note: proves live discovery, not a cached resource list

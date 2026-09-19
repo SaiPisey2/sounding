@@ -1,0 +1,23 @@
+# The three namespaces the acceptance suite scores. Labelled so demo-down
+# (and a human, mid-debug) can find everything this fixture owns with one
+# selector, without guessing at names.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sounding-demo
+  labels:
+    sounding.dev/fixture: "true"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sounding-retain-only
+  labels:
+    sounding.dev/fixture: "true"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sounding-crd
+  labels:
+    sounding.dev/fixture: "true"
