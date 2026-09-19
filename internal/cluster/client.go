@@ -6,11 +6,14 @@ package cluster
 
 import (
 	"fmt"
+	"net/http"
+	"sync/atomic"
 
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/metadata"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -33,18 +36,51 @@ type Clients struct {
 	Calls     *int64
 }
 
-// New builds the clients this tool needs from a kubeconfig path. An empty
-// path is not an error: clientcmd.BuildConfigFromFlags treats an empty
-// master URL and an empty path as a request for the in-cluster config, which
-// is what lets the same binary run from a workstation and from inside a pod
-// without a branch here.
+// New builds the clients this tool needs. An empty kubeconfig path means
+// "use the default resolution": $KUBECONFIG if set, otherwise
+// ~/.kube/config, falling back to the in-cluster config only if neither
+// exists -- that is what lets the same binary run from a workstation and
+// from inside a pod without a branch here.
+//
+// clientcmd.BuildConfigFromFlags("", "") does NOT do this, despite reading
+// as though it might: with both its arguments empty it skips kubeconfig
+// resolution entirely and goes straight to the in-cluster loader, so the
+// tool's single most common invocation -- no flag, a normal workstation
+// kubeconfig sitting at the default location -- fails outside a pod every
+// time, and the error it fails with talks about --master and
+// KUBERNETES_MASTER, neither of which is a flag or variable this CLI has.
+// NewNonInteractiveDeferredLoadingClientConfig is the client-go entry point
+// that actually implements kubectl's own default resolution order, in-
+// cluster fallback included.
 func New(kubeconfig string) (*Clients, error) {
-	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	var cfg *rest.Config
+	var err error
+	if kubeconfig != "" {
+		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+	} else {
+		cfg, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+			clientcmd.NewDefaultClientConfigLoadingRules(),
+			&clientcmd.ConfigOverrides{},
+		).ClientConfig()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("loading cluster config: %w", err)
 	}
 
-	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
+	var calls int64
+
+	// Only the discovery client's transport is instrumented: cascade,
+	// volume and snapshot already increment *Calls themselves once per
+	// List/Get they issue against Metadata/Typed/Dynamic, and wrapping
+	// every client's transport here as well would count each of those
+	// requests twice. Discovery is different -- ListableNamespaced calls
+	// a single client-go helper that can silently issue anywhere from a
+	// handful to dozens of requests underneath it, with no per-request
+	// hook of its own, so this is the only place a true count is
+	// available at all.
+	discoveryCfg := rest.CopyConfig(cfg)
+	discoveryCfg.WrapTransport = countingTransport(&calls)
+	dc, err := discovery.NewDiscoveryClientForConfig(discoveryCfg)
 	if err != nil {
 		return nil, fmt.Errorf("building discovery client: %w", err)
 	}
@@ -64,7 +100,6 @@ func New(kubeconfig string) (*Clients, error) {
 		return nil, fmt.Errorf("building typed client: %w", err)
 	}
 
-	var calls int64
 	return &Clients{
 		Discovery: dc,
 		Dynamic:   dyn,
@@ -72,4 +107,25 @@ func New(kubeconfig string) (*Clients, error) {
 		Typed:     tc,
 		Calls:     &calls,
 	}, nil
+}
+
+// countingTransport returns a client-go transport wrapper that increments
+// calls once for every HTTP request that passes through it. It is what
+// makes the "N api calls" line in the report true for discovery specifically:
+// counting the resources a scan came back with says nothing about how many
+// requests it took to find them.
+func countingTransport(calls *int64) func(http.RoundTripper) http.RoundTripper {
+	return func(rt http.RoundTripper) http.RoundTripper {
+		return &countingRoundTripper{rt: rt, calls: calls}
+	}
+}
+
+type countingRoundTripper struct {
+	rt    http.RoundTripper
+	calls *int64
+}
+
+func (c *countingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	atomic.AddInt64(c.calls, 1)
+	return c.rt.RoundTrip(req)
 }
