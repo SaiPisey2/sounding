@@ -84,6 +84,26 @@ func TestPartialDiscoveryIsFatalAndNamesTheGroups(t *testing.T) {
 	}
 }
 
+// A bare connectivity failure -- no server to ask at all, as opposed to
+// some groups answering and others not -- must come back unwrapped. Folding
+// it into ErrIncompleteDiscovery would make the command exit 2 (a refusal:
+// "your command is wrong") for a cluster that is simply down, when the
+// right answer is an operational failure (exit 1: "sounding could not run
+// right now").
+func TestUnreachableClusterIsNotTreatedAsIncompleteDiscovery(t *testing.T) {
+	unreachable := errors.New("dial tcp 10.0.0.1:6443: connect: connection refused")
+	err := wrapDiscoveryError(unreachable)
+	if err == nil {
+		t.Fatal("want the error to propagate")
+	}
+	if errors.Is(err, ErrIncompleteDiscovery) {
+		t.Errorf("a bare connectivity failure must not wrap ErrIncompleteDiscovery: %v", err)
+	}
+	if !errors.Is(err, unreachable) {
+		t.Errorf("the original error must still be reachable via errors.Is: %v", err)
+	}
+}
+
 // resourceSet builds a small fixture for ResolveResource tests: a stable
 // namespaced resource plus a same-plural resource in a second group, which is
 // the case that must fail rather than guess.

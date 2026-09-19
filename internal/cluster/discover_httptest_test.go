@@ -82,6 +82,33 @@ func writeDiscoveryJSON(t *testing.T, w http.ResponseWriter, v interface{}) {
 	}
 }
 
+// A cluster that cannot be reached at all -- not one where some api groups
+// answered and others did not, but one with no server behind the URL --
+// must come back as a plain error, not ErrIncompleteDiscovery: the caller
+// maps ErrIncompleteDiscovery to "refused: fix your command" and everything
+// else to "operational error", and a down cluster is the second one, never
+// the first.
+func TestListableNamespacedOnAnUnreachableServerIsNotIncompleteDiscovery(t *testing.T) {
+	srv := httptest.NewServer(http.NewServeMux())
+	url := srv.URL
+	srv.Close() // nothing is listening on url now
+
+	dc, err := discovery.NewDiscoveryClientForConfig(&rest.Config{Host: url})
+	if err != nil {
+		t.Fatalf("building discovery client: %v", err)
+	}
+	var calls int64
+	c := &Clients{Discovery: dc, Calls: &calls}
+
+	_, err = ListableNamespaced(context.Background(), c)
+	if err == nil {
+		t.Fatal("want an error against an unreachable server")
+	}
+	if errors.Is(err, ErrIncompleteDiscovery) {
+		t.Errorf("an unreachable server must not be reported as incomplete discovery: %v", err)
+	}
+}
+
 // This is the behavior selectListable and wrapDiscoveryError cannot pin on
 // their own: a real discovery round trip where one group is unreachable must
 // come back through ListableNamespaced as ErrIncompleteDiscovery naming that

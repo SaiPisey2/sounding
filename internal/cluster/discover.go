@@ -51,7 +51,15 @@ func wrapDiscoveryError(err error) error {
 		return fmt.Errorf("%w: these api groups did not answer, so the enumeration would be short and would read as safe: %s",
 			ErrIncompleteDiscovery, df.Error())
 	}
-	return fmt.Errorf("%w: %v", ErrIncompleteDiscovery, err)
+	// Anything else -- a bare TCP failure, DNS not resolving, a timeout --
+	// is not "some API groups did not answer while others did"; it is
+	// "there was no server to ask at all". Wrapping it in
+	// ErrIncompleteDiscovery would make the command exit 2, which tells a
+	// caller's retry logic the COMMAND is wrong. It is not; the cluster is
+	// unreachable, which is an operational fact about this run, not a
+	// verdict about the input. Returning it unwrapped lets the caller
+	// route it as an operational failure instead of a refusal.
+	return err
 }
 
 func selectListable(lists []*metav1.APIResourceList) ([]Resource, error) {
