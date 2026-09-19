@@ -155,12 +155,17 @@ var seedNonEventEffects = seedDeployments + seedReplicaSets + seedPods + seedSer
 	seedEndpoints + seedEndpointSlices + seedConfigMaps + seedSecrets +
 	seedServiceAccounts + seedPVCs + seedVolumeJoinEffects
 
-// This is the assertion that would have caught the Event double-enumeration
-// bug on day one: that bug inflated exactly this number (the report's own
-// "objects N" count), while every other assertion in this file -- class,
-// exit code, which volume is named, ordering -- stayed satisfied throughout,
-// because none of them look at how many objects there are, only at which
-// ones and in what order.
+// What this test guarantees, and no more: the non-Event count catches
+// something that stopped being enumerated (a resource silently dropped
+// from discovery, a kind that used to appear and no longer does). It does
+// NOT catch something being enumerated twice: duplicating every Event
+// raises the header's total by exactly as much as it raises
+// strings.Count(out, "Event/"), so nonEvent := total - events is invariant
+// under that bug -- it cancels out algebraically, not just by coincidence
+// on this fixture. That is why TestNoObjectIsListedTwice exists as a
+// separate assertion below: uniqueness is the property duplication
+// actually violates, and disappearance is the property this one actually
+// checks. Neither test can stand in for the other.
 func TestObjectCountMatchesKnownConstruction(t *testing.T) {
 	out, _ := score(t, "delete ns sounding-demo", "--all")
 	total := objectsHeaderCount(t, out)
@@ -172,6 +177,53 @@ func TestObjectCountMatchesKnownConstruction(t *testing.T) {
 	}
 	if events < seedMinEvents {
 		t.Errorf("event count = %d, want at least %d -- Events must still be enumerated, just not pinned exactly:\n%s", events, seedMinEvents, out)
+	}
+}
+
+// effectKinds names every model.Effect.Kind this build produces (see
+// internal/model/model.go's Effect and internal/volume/join.go's
+// classifyPV/classifyUnbound). effectIdentities uses it to tell an effect
+// line ("  destroys        Deployment/api        in the namespace") apart
+// from everything else --all prints: the title line, the header block, and
+// the "Nothing was executed" sentence, none of which start with one of
+// these words.
+var effectKinds = map[string]bool{
+	"destroys":          true,
+	"destroys-data":     true,
+	"detaches-data":     true,
+	"unknown-data-fate": true,
+}
+
+// effectIdentities returns the "Kind/Name" token of every effect line in an
+// --all report, in the order printed.
+func effectIdentities(out string) []string {
+	var ids []string
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !effectKinds[fields[0]] {
+			continue
+		}
+		ids = append(ids, fields[1])
+	}
+	return ids
+}
+
+// This is the assertion that actually catches the Event double-enumeration
+// class of bug: it inflates the number of TIMES an object is listed, which
+// only a direct uniqueness check can see. TestObjectCountMatchesKnownConstruction's
+// arithmetic (total minus the Event count) cannot see it, because
+// duplicating an object raises both terms by the same amount and they
+// cancel -- confirmed by reintroducing the historical bug and watching that
+// test keep passing while this one failed (see the report). No object --
+// Event or otherwise -- may appear twice in the complete listing.
+func TestNoObjectIsListedTwice(t *testing.T) {
+	out, _ := score(t, "delete ns sounding-demo", "--all")
+	seen := make(map[string]bool)
+	for _, id := range effectIdentities(out) {
+		if seen[id] {
+			t.Errorf("listed more than once: %s\n%s", id, out)
+		}
+		seen[id] = true
 	}
 }
 
