@@ -33,15 +33,42 @@ type Object struct {
 // Any list error aborts and is returned rather than folded into a shorter
 // result: a partial enumeration would understate the blast radius, and this
 // tool would rather refuse than report a namespace as safer than it is.
+//
+// A conformant cluster serves some kinds under more than one group -- Events
+// under both "v1" and "events.k8s.io/v1" is the one every cluster since 1.19
+// has -- and ListableNamespaced has no way to know that ahead of time, so it
+// lists both. Without deduplication that reads the same object twice, and
+// the count this tool exists to get exactly right comes out wrong by
+// however many resources double-serve. seen is keyed by UID, not by
+// group/kind or resource name, because the rule is "one object, one UID,
+// appears once" for whichever pair of groups happens to double-serve it
+// next -- a carve-out for Events specifically would leave the next
+// dual-served resource broken the same way.
+//
+// This sits upstream of, and solves a different problem from, Order's
+// byUID map[types.UID][]Object: that map keeps every object sharing a UID
+// because Order cannot assume its caller-supplied input has real cluster
+// UID uniqueness. Here the assumption runs the other way -- a UID really
+// does name exactly one object -- and that assumption is what licenses
+// collapsing the one case where our own listing, not the input, produced
+// the duplicate: the same object read twice through two list calls.
 func Enumerate(ctx context.Context, c *cluster.Clients, rs []cluster.Resource, ns string) ([]Object, error) {
 	var out []Object
+	seen := make(map[types.UID]bool)
 	for _, r := range rs {
 		pl, err := c.Metadata.Resource(r.GVR).Namespace(ns).List(ctx, metav1.ListOptions{})
+		// The call happened and cost the caller a request regardless of how
+		// many of its results turn out to be duplicates already seen under
+		// another group, so it counts here, before the dedupe check below.
 		*c.Calls++
 		if err != nil {
 			return nil, err
 		}
 		for _, item := range pl.Items {
+			if seen[item.UID] {
+				continue
+			}
+			seen[item.UID] = true
 			var owners []types.UID
 			for _, o := range item.OwnerReferences {
 				owners = append(owners, o.UID)

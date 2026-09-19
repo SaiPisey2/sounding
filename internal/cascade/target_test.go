@@ -8,6 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	metadatafake "k8s.io/client-go/metadata/fake"
 	clienttesting "k8s.io/client-go/testing"
 
@@ -95,5 +96,93 @@ func TestEnumerateAbortsOnAnyListError(t *testing.T) {
 	// would undercount exactly the request that mattered most.
 	if calls != 1 {
 		t.Errorf("calls = %d, want 1 (the failed call still counts)", calls)
+	}
+}
+
+// A conformant cluster serves Events under both "v1" and "events.k8s.io/v1"
+// (every cluster since 1.19), and ListableNamespaced lists both because it
+// has no way to know ahead of time that they name the same objects. Without
+// deduplication by UID, Enumerate reports the same object once per group it
+// happens to be served under -- this is the failure a live cluster surfaced:
+// the object count came out nearly double on a namespace full of Events.
+func TestEnumerateDeduplicatesSameObjectAcrossGroups(t *testing.T) {
+	core := &metav1.PartialObjectMetadata{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Event"},
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-scheduled", Namespace: "demo", UID: "shared-uid"},
+	}
+	eventsGroup := &metav1.PartialObjectMetadata{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "events.k8s.io/v1", Kind: "Event"},
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-scheduled", Namespace: "demo", UID: "shared-uid"},
+	}
+
+	scheme := runtime.NewScheme()
+	if err := metav1.AddMetaToScheme(scheme); err != nil {
+		t.Fatalf("AddMetaToScheme: %v", err)
+	}
+	client := metadatafake.NewSimpleMetadataClient(scheme, core, eventsGroup)
+	var calls int64
+	c := &cluster.Clients{Metadata: client, Calls: &calls}
+
+	rs := []cluster.Resource{
+		{GVR: schema.GroupVersionResource{Group: "", Version: "v1", Resource: "events"}, Kind: "Event", Namespaced: true},
+		{GVR: schema.GroupVersionResource{Group: "events.k8s.io", Version: "v1", Resource: "events"}, Kind: "Event", Namespaced: true},
+	}
+
+	got, err := Enumerate(context.Background(), c, rs, "demo")
+	if err != nil {
+		t.Fatalf("Enumerate errored: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d objects, want 1 -- the same object was served under two groups", len(got))
+	}
+
+	// Both list calls really happened and each cost a request, even though
+	// the second one's result was entirely a duplicate; the report's call
+	// count must not silently drop the request that turned out redundant.
+	if calls != 2 {
+		t.Errorf("calls = %d, want 2 (both groups were listed)", calls)
+	}
+}
+
+// A second group is not always redundant -- it may legitimately hold
+// objects the first group does not. Deduplicating by UID must not turn into
+// deduplicating by resource or group, or a genuinely distinct object from a
+// second group would silently vanish the same way the duplicate should.
+func TestEnumerateKeepsDistinctObjectsFromASecondGroup(t *testing.T) {
+	fromCore := &metav1.PartialObjectMetadata{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Event"},
+		ObjectMeta: metav1.ObjectMeta{Name: "core-event", Namespace: "demo", UID: "uid-a"},
+	}
+	fromEventsGroup := &metav1.PartialObjectMetadata{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "events.k8s.io/v1", Kind: "Event"},
+		ObjectMeta: metav1.ObjectMeta{Name: "extra-event", Namespace: "demo", UID: "uid-b"},
+	}
+
+	scheme := runtime.NewScheme()
+	if err := metav1.AddMetaToScheme(scheme); err != nil {
+		t.Fatalf("AddMetaToScheme: %v", err)
+	}
+	client := metadatafake.NewSimpleMetadataClient(scheme, fromCore, fromEventsGroup)
+	var calls int64
+	c := &cluster.Clients{Metadata: client, Calls: &calls}
+
+	rs := []cluster.Resource{
+		{GVR: schema.GroupVersionResource{Group: "", Version: "v1", Resource: "events"}, Kind: "Event", Namespaced: true},
+		{GVR: schema.GroupVersionResource{Group: "events.k8s.io", Version: "v1", Resource: "events"}, Kind: "Event", Namespaced: true},
+	}
+
+	got, err := Enumerate(context.Background(), c, rs, "demo")
+	if err != nil {
+		t.Fatalf("Enumerate errored: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d objects, want 2 -- distinct UIDs must both survive", len(got))
+	}
+	seen := map[types.UID]bool{}
+	for _, o := range got {
+		seen[o.UID] = true
+	}
+	if !seen["uid-a"] || !seen["uid-b"] {
+		t.Errorf("got UIDs %v, want both uid-a and uid-b", got)
 	}
 }
