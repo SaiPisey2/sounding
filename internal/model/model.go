@@ -20,32 +20,42 @@ const (
 	ClassAuthority
 )
 
+// Target's fields, and the other three types below, carry explicit json
+// tags because they are v1.0.0's wire format on two sides at once: --json
+// encodes them on the way out, and --stdin's action.ReadJSON decodes an
+// Action from exactly this shape on the way in. Before this, only the
+// command's own jsonFinding wrapper (cmd/sounding/main.go) had tags --
+// these four types had none, so their Go field names leaked into the
+// output as-is and one document mixed "action"/"effects"/"apiCalls" at the
+// top level with "Verb"/"Group"/"Kind"/"Basis" one level down. Freezing the
+// tags here is what keeps that shape from drifting the next time a field on
+// any of these four is renamed for an unrelated reason.
 type Target struct {
-	Group     string
-	Version   string
-	Resource  string
-	Kind      string
-	Namespace string
-	Name      string
+	Group     string `json:"group"`
+	Version   string `json:"version"`
+	Resource  string `json:"resource"`
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
 }
 
 type Action struct {
-	Verb    string
-	Target  Target
-	Payload map[string]any
+	Verb    string         `json:"verb"`
+	Target  Target         `json:"target"`
+	Payload map[string]any `json:"payload,omitempty"`
 }
 
 type Effect struct {
-	Kind        string
-	Object      Target
-	Basis       Basis
-	Explanation string
+	Kind        string `json:"kind"`
+	Object      Target `json:"object"`
+	Basis       Basis  `json:"basis"`
+	Explanation string `json:"explanation"`
 }
 
 type UndoPlan struct {
-	Dir      string
-	Objects  int
-	Excluded []string
+	Dir      string   `json:"dir"`
+	Objects  int      `json:"objects"`
+	Excluded []string `json:"excluded,omitempty"`
 }
 
 // Finding records an action and its effects. Must be built with NewFinding, which

@@ -187,7 +187,7 @@ func TestJSONOutputRendersTheClassAsItsNameNotACollidingNumber(t *testing.T) {
 	var decoded struct {
 		Class   string `json:"class"`
 		Effects []struct {
-			Basis string `json:"Basis"`
+			Basis string `json:"basis"`
 		} `json:"effects"`
 	}
 	if err := json.Unmarshal(b.Bytes(), &decoded); err != nil {
@@ -286,5 +286,61 @@ func TestExcludedFromEffectsNamesTheRetainVolumeToo(t *testing.T) {
 	}
 	if !strings.Contains(joined, "claimRef") {
 		t.Errorf("the retained-volume entry must explain the claimRef needs clearing before the restored pvc can rebind: %v", excluded)
+	}
+}
+
+// Before json tags existed on model.Action, Target, Effect and UndoPlan,
+// one --json document mixed casing conventions: the top level read
+// action/effects/apiCalls (from jsonFinding's own tags) while the nested
+// action and effects read Verb/Group/Kind/Basis (the untagged Go field
+// names underneath). v1.0.0 freezes this wire format, so every field at
+// every nesting level must use the same lowercase convention.
+func TestJSONOutputIsConsistentlyCasedAtEveryNestingLevel(t *testing.T) {
+	f := model.Finding{
+		Action: model.Action{
+			Verb:   "delete",
+			Target: model.Target{Group: "", Version: "v1", Resource: "namespaces", Kind: "Namespace", Name: "prod-payments"},
+		},
+		Effects: []model.Effect{
+			{
+				Kind:  "destroys-data",
+				Basis: model.BasisComputed,
+				Object: model.Target{
+					Group: "", Version: "v1", Resource: "persistentvolumes", Kind: "PersistentVolume", Name: "pv-1",
+				},
+				Explanation: "reclaimPolicy=Delete",
+			},
+		},
+		Class:    model.ClassTerminal,
+		Undo:     &model.UndoPlan{Dir: "/tmp/undo", Objects: 1, Excluded: []string{"PersistentVolume/pv-1: reclaimPolicy=Delete"}},
+		Scanned:  time.Unix(0, 0).UTC(),
+		APICalls: 61,
+	}
+
+	var b bytes.Buffer
+	if err := writeJSON(&b, f); err != nil {
+		t.Fatalf("writeJSON errored: %v", err)
+	}
+	s := b.String()
+
+	// Every one of these must appear as a JSON key: the nested Action,
+	// Target (twice: action.target and effects[].object) and Effect fields
+	// that had no tag at all before this fix, alongside the top-level
+	// jsonFinding fields that already did.
+	for _, key := range []string{
+		`"action"`, `"verb"`, `"target"`, `"group"`, `"version"`, `"resource"`, `"kind"`, `"name"`,
+		`"effects"`, `"object"`, `"basis"`, `"explanation"`,
+		`"class"`, `"undo"`, `"dir"`, `"objects"`, `"excluded"`, `"scanned"`, `"apiCalls"`,
+	} {
+		if !strings.Contains(s, key) {
+			t.Errorf("json output missing expected key %s:\n%s", key, s)
+		}
+	}
+	// And none of the untagged Go field names this fix removed should
+	// survive as capitalised JSON keys.
+	for _, stale := range []string{`"Verb"`, `"Group"`, `"Resource"`, `"Kind"`, `"Basis"`, `"Explanation"`, `"Dir"`, `"Objects"`, `"Excluded"`} {
+		if strings.Contains(s, stale) {
+			t.Errorf("json output still has a capitalised, untagged field name %s:\n%s", stale, s)
+		}
 	}
 }

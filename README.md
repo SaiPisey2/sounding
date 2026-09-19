@@ -78,6 +78,66 @@ delete namespaces/checkout
   ... and 20 more (use --all to list every effect)
 ```
 
+## Machine-readable I/O
+
+`--json` and `--stdin` are v1.0.0's wire format, frozen as of this release:
+every field below is a stable contract, not an implementation detail that
+happens to be visible.
+
+### `--stdin`: the Action schema
+
+`sounding score --stdin` reads one JSON object from stdin, capped at 1 MiB,
+in place of a command string:
+
+```json
+{
+  "verb": "delete",
+  "target": {
+    "group": "",
+    "version": "",
+    "resource": "namespaces",
+    "kind": "",
+    "namespace": "",
+    "name": "checkout"
+  }
+}
+```
+
+`verb` is required; everything else in `target` may be omitted except
+`resource` and `name` for the one verb/resource pair this build actually
+analyses (`delete` against `namespaces`). A body over 1 MiB, or one with no
+`verb` at all, is refused rather than scored.
+
+### `--json`: the Finding schema
+
+`--json` encodes the full `Finding` this run produced, uncapped regardless
+of `--all` -- a machine reader does not scroll past the safety line the way
+a terminal does:
+
+```json
+{
+  "action": { "verb": "delete", "target": { "resource": "namespaces", "name": "checkout" } },
+  "effects": [
+    {
+      "kind": "destroys-data",
+      "object": { "group": "", "version": "v1", "resource": "persistentvolumes", "kind": "PersistentVolume", "name": "pv-orders" },
+      "basis": "computed",
+      "explanation": "pvc/orders-data is bound to pv/pv-orders with reclaimPolicy=Delete: the csi driver destroys the underlying volume and the data is not recoverable"
+    }
+  ],
+  "class": "TERMINAL",
+  "undo": { "dir": "/tmp/undo", "objects": 40, "excluded": ["PersistentVolume/pv-orders: ..."] },
+  "scanned": "2026-09-19T21:26:59Z",
+  "apiCalls": 39
+}
+```
+
+`class` is always the class name (`"TERMINAL"`, ...), never the underlying
+integer -- `model.Class`'s int values collide with the exit codes of
+*other* classes, so encoding one directly would print `3` for a TERMINAL
+finding, which is COMPENSABLE's own exit code. `undo` is present only when
+`--snapshot` ran.
+
 ## Limits
 
 - **Time-of-check / time-of-use.** The `scanned` timestamp marks when
