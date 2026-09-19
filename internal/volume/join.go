@@ -57,7 +57,13 @@ func Join(ctx context.Context, c *cluster.Clients, objs []cascade.Object) ([]mod
 	var effects []model.Effect
 	worst := model.ClassRead
 	for _, o := range objs {
-		if o.Target.Resource != "persistentvolumeclaims" {
+		// Group must be checked alongside Resource: "persistentvolumeclaims"
+		// is the core group's own name for this kind, but nothing stops a
+		// CRD or aggregated API from registering a resource with the same
+		// plural under its own group. Matching on Resource alone would feed
+		// a same-named-but-foreign object into the PVC-specific Get calls
+		// below, which expect the real core/v1 PersistentVolumeClaim shape.
+		if o.Target.Resource != "persistentvolumeclaims" || o.Target.Group != "" {
 			continue
 		}
 		claim, err := c.Typed.CoreV1().PersistentVolumeClaims(o.Target.Namespace).Get(ctx, o.Target.Name, metav1.GetOptions{})
