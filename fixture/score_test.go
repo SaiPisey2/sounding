@@ -56,8 +56,18 @@ func TestACRDRegisteredNowIsEnumerated(t *testing.T) {
 	}
 }
 
+// Ordering is a property of the complete listing, not of whatever the
+// default cap happens to let through. sounding-demo's namespace generates
+// enough core-group objects (Events chief among them, one per pod
+// lifecycle step) that the default 20-effect cap fills before the
+// Deployment/ReplicaSet chain -- which sorts after every core-group
+// resource, since cluster.ListableNamespaced orders resources by
+// GroupVersionResource string and "" (core) sorts before "apps" -- ever
+// appears. Asserting against the capped view tests what the cap chose to
+// show, not what cascade.Order actually produced; --all is the view where
+// the ordering claim is real.
 func TestOwnerChainIsReportedOwnerFirst(t *testing.T) {
-	out, _ := score(t, "delete ns sounding-demo")
+	out, _ := score(t, "delete ns sounding-demo", "--all")
 	d, r := strings.Index(out, "Deployment/"), strings.Index(out, "ReplicaSet/")
 	p := strings.Index(out, "Pod/")
 	if !(d >= 0 && r > d && p > r) {
