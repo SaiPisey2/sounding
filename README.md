@@ -37,15 +37,15 @@ it is `Retain`. Nothing else about the namespace has to change.
 
 ## What it does not do
 
-- It executes nothing. It never issues a write, a delete, or a patch against
-  the cluster it scores.
-- It issues no write, delete or patch against a cluster (see
-  `internal/cluster/readonly_test.go`, which checks this mechanically rather
-  than by review). It needs only `list` and `get` to do its job, and the
-  credential you run it with should be scoped to exactly those two verbs --
-  `cluster.New` builds clients straight from whatever kubeconfig it is
-  given, with no scoping or impersonation of its own, so a credential wider
-  than `list`/`get` (a cluster-admin context, for instance) could still
+- It executes nothing and never issues a write, a delete, or a patch against
+  the cluster it scores. An AST census of every non-test file confirms the
+  only client-go method calls are `Get`, `List` and `ListableNamespaced`;
+  `internal/cluster/readonly_test.go` mechanically rejects a known set of
+  mutating calls as a sanity check. It needs only `list` and `get` to do its
+  job, and the credential you run it with should be scoped to exactly those
+  two verbs -- `cluster.New` builds clients straight from whatever kubeconfig
+  it is given, with no scoping or impersonation of its own, so a credential
+  wider than `list`/`get` (a cluster-admin context, for instance) could still
   perform the very mutation being scored. Read-only code is not the same
   thing as a read-only credential; only the credential you choose makes it
   one.
