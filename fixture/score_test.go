@@ -157,12 +157,13 @@ const (
 	seedConfigMaps      = 2 // api-config (seeded) + kube-root-ca.crt (every namespace gets one)
 	seedSecrets         = 1 // api-secret
 	seedServiceAccounts = 1 // "default", created per namespace
-	seedPVCs            = 2 // data-retain, data-delete
+	seedPVCs            = 3 // data-retain, data-delete, orphan (unbound)
 
-	// One volume.Join effect per PVC -- destroys-data or detaches-data,
-	// naming the bound PersistentVolume -- counted separately from the
+	// One volume.Join effect per PVC -- destroys-data, detaches-data or
+	// unknown-data-fate, naming the bound PersistentVolume (or, for orphan,
+	// the PVC itself, since it has none) -- counted separately from the
 	// PVC's own "destroys" effect already counted in seedPVCs above.
-	seedVolumeJoinEffects = 2
+	seedVolumeJoinEffects = 3
 
 	seedMinEvents = 1
 )
@@ -210,16 +211,31 @@ var effectKinds = map[string]bool{
 	"unknown-data-fate": true,
 }
 
-// effectIdentities returns the "Kind/Name" token of every effect line in an
-// --all report, in the order printed.
-func effectIdentities(out string) []string {
-	var ids []string
+// effectIdentity pairs an effect line's KIND ("destroys", "unknown-data-fate",
+// ...) with the "Kind/Name" object token it names. Uniqueness must be
+// asserted on the PAIR, not the object token alone: internal/volume's
+// classifyUnbound deliberately emits a second effect -- unknown-data-fate --
+// naming the very same PVC its own "destroys" effect already named (an
+// unbound PVC has no spec.volumeName, so nothing is known about what backs
+// it, and that unknown-data-fate line is the whole point of running the
+// join at all). That is two different things sounding knows about one
+// object, not the same thing enumerated twice, and keying uniqueness on the
+// object alone would flag it as though it were the Event double-enumeration
+// bug this test exists to catch.
+type effectIdentity struct {
+	kind, object string
+}
+
+// effectIdentities returns the (kind, "Kind/Name") pair of every effect line
+// in an --all report, in the order printed.
+func effectIdentities(out string) []effectIdentity {
+	var ids []effectIdentity
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 || !effectKinds[fields[0]] {
 			continue
 		}
-		ids = append(ids, fields[1])
+		ids = append(ids, effectIdentity{kind: fields[0], object: fields[1]})
 	}
 	return ids
 }
@@ -230,14 +246,27 @@ func effectIdentities(out string) []string {
 // arithmetic (total minus the Event count) cannot see it, because
 // duplicating an object raises both terms by the same amount and they
 // cancel -- confirmed by reintroducing the historical bug and watching that
-// test keep passing while this one failed (see the report). No object --
-// Event or otherwise -- may appear twice in the complete listing.
+// test keep passing while this one failed (see the report). No (kind,
+// object) pair -- Event or otherwise -- may appear twice in the complete
+// listing. Keying on the pair rather than the object alone is what lets
+// sounding-demo carry a real unbound PVC (orphan) without a false positive:
+// its "destroys" and "unknown-data-fate" lines share an object but not a
+// pair, while two "destroys" lines for the same duplicated Event share both.
 func TestNoObjectIsListedTwice(t *testing.T) {
 	out, _ := score(t, "delete ns sounding-demo", "--all")
-	seen := make(map[string]bool)
-	for _, id := range effectIdentities(out) {
+	ids := effectIdentities(out)
+	if len(ids) == 0 {
+		// A loop with nothing to iterate cannot fail -- the exact "cannot
+		// fail" class this test exists to remove. This fixture always seeds
+		// known effects, so zero parsed identities means effectIdentities
+		// (or effectKinds, if internal/model ever gains a Kind not listed
+		// there) is broken, not that the namespace was genuinely empty.
+		t.Fatalf("parsed zero effect identities from the report:\n%s", out)
+	}
+	seen := make(map[effectIdentity]bool)
+	for _, id := range ids {
 		if seen[id] {
-			t.Errorf("listed more than once: %s\n%s", id, out)
+			t.Errorf("listed more than once: %s %s\n%s", id.kind, id.object, out)
 		}
 		seen[id] = true
 	}

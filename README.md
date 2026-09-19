@@ -98,8 +98,9 @@ delete namespaces/checkout
 disposable `kind` cluster whose contents are known by construction: three
 namespaces seeded with a Deployment→ReplicaSet→Pod chain, a Service, a
 ConfigMap, a Secret, two PersistentVolumeClaims bound to `hostPath`
-PersistentVolumes with different reclaim policies, and a CRD registered
-*after* the cluster is already running.
+PersistentVolumes with different reclaim policies, one PersistentVolumeClaim
+left deliberately unbound, and a CRD registered *after* the cluster is
+already running.
 
 ```
 make build       # builds ./sounding
