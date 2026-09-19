@@ -75,12 +75,17 @@ func Enumerate(ctx context.Context, c *cluster.Clients, rs []cluster.Resource, n
 // the report, so anything the walk never reaches is appended afterward, in
 // UID order for determinism across runs.
 func Order(objs []Object) []Object {
-	byUID := make(map[types.UID]Object, len(objs))
+	// byUID holds a slice, not a single Object, because objs is caller-
+	// supplied and this tool cannot assume a real cluster's UID uniqueness
+	// holds for it. Collapsing two objects that share a UID down to one
+	// silently removes an object from the blast radius -- the one outcome
+	// this package must never produce, however the bad input arrives.
+	byUID := make(map[types.UID][]Object, len(objs))
 	childrenOf := make(map[types.UID][]types.UID)
 	hasOwnerInSet := make(map[types.UID]bool, len(objs))
 
 	for _, o := range objs {
-		byUID[o.UID] = o
+		byUID[o.UID] = append(byUID[o.UID], o)
 	}
 	for _, o := range objs {
 		for _, ownerUID := range o.Owners {
@@ -119,7 +124,7 @@ func Order(objs []Object) []Object {
 			return
 		}
 		visited[uid] = true
-		out = append(out, byUID[uid])
+		out = append(out, byUID[uid]...)
 		for _, child := range childrenOf[uid] {
 			walk(child)
 		}

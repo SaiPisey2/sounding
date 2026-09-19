@@ -61,6 +61,14 @@ func TestEnumeratePopulatesEveryTargetField(t *testing.T) {
 	case tgt.Name != "settings":
 		t.Errorf("Target.Name = %q, want settings", tgt.Name)
 	}
+
+	// *c.Calls is what the report prints as the scan's cost; a regression
+	// that moved the increment inside the per-item loop, or dropped it on
+	// an error path, would make the tool state something false about what
+	// it did, and nothing else here would catch it.
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (one List call for one resource)", calls)
+	}
 }
 
 // A list error must abort the whole enumeration rather than return whatever
@@ -81,5 +89,11 @@ func TestEnumerateAbortsOnAnyListError(t *testing.T) {
 	}
 	if _, err := Enumerate(context.Background(), c, rs, "demo"); !errors.Is(err, wantErr) {
 		t.Fatalf("Enumerate error = %v, want %v", err, wantErr)
+	}
+	// The counter must still reflect the one call that was made, even
+	// though that call failed -- a dropped increment on the error path
+	// would undercount exactly the request that mattered most.
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (the failed call still counts)", calls)
 	}
 }
