@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"k8s.io/client-go/rest"
 )
 
 // clientcmd.BuildConfigFromFlags("", "") ignores $KUBECONFIG entirely and
@@ -70,5 +72,18 @@ func TestNewWithNoConfigAnywhereFailsRatherThanLookingUsable(t *testing.T) {
 
 	if _, err := New(""); err == nil {
 		t.Fatal("want an error with no config anywhere, got nil")
+	}
+}
+
+// A conformant cluster sends a Warning header on a deprecated API this tool
+// legitimately listed -- v1 Endpoints, for one -- and the default client-go
+// handler prints that above the report on every single run. It describes
+// the cluster, not a mistake this tool made, and it is not this tool's
+// place to relay it.
+func TestSuppressServerWarningsDisablesTheDefaultHandler(t *testing.T) {
+	cfg := &rest.Config{}
+	suppressServerWarnings(cfg)
+	if _, ok := cfg.WarningHandler.(rest.NoWarnings); !ok {
+		t.Errorf("WarningHandler = %#v, want rest.NoWarnings{}", cfg.WarningHandler)
 	}
 }

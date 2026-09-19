@@ -71,6 +71,8 @@ func New(kubeconfig string) (*Clients, error) {
 		return nil, fmt.Errorf("loading cluster config: %w", err)
 	}
 
+	suppressServerWarnings(cfg)
+
 	var calls int64
 
 	// Only the discovery client's transport is instrumented: cascade,
@@ -111,6 +113,19 @@ func New(kubeconfig string) (*Clients, error) {
 		Typed:     tc,
 		Calls:     &calls,
 	}, nil
+}
+
+// suppressServerWarnings sets cfg's WarningHandler so a server's own
+// deprecation warnings never print. Every list/get this tool issues is a
+// legitimate use of whatever API version discovery reported as current, so
+// a "this API is deprecated" warning header describes the cluster, not a
+// mistake this tool made -- and printing it above the report on every
+// single run (one observed case: "v1 Endpoints is deprecated") drowns the
+// actual finding in noise nobody asked for. Called on cfg before any client
+// below is built from it, so every one of them inherits the suppression
+// from the same shared config rather than needing it set four times over.
+func suppressServerWarnings(cfg *rest.Config) {
+	cfg.WarningHandler = rest.NoWarnings{}
 }
 
 // countingTransport returns a client-go transport wrapper that increments
