@@ -64,11 +64,72 @@ func main() {
 const usage = "usage: sounding score '<command>' [--snapshot DIR] [--kubeconfig PATH] [--json] [--all]\n" +
 	"       sounding score --stdin [--snapshot DIR] [--kubeconfig PATH] [--json] [--all]"
 
+// exitCodeTable documents the class -> exit code contract in the one place
+// most likely to actually reach an integrator writing a gateway wrapper
+// around this binary: the binary itself, on both `-h` and `score -h`,
+// rather than only the README, which that integration code never reads at
+// run time. Treating exit 3 (COMPENSABLE) or 4 (TERMINAL) as an ordinary
+// tool error rather than a verdict is the single most likely integration
+// bug this tool can cause -- it would mean the wrapper's approval or retry
+// logic never sees the one thing sounding exists to report.
+const exitCodeTable = `exit codes:
+  0   READ or REVERSIBLE -- nothing destructive was found, or it was found but is trivially undone
+  1   operational error -- sounding itself failed to run (bad kubeconfig, network error, disk write failure); fix the environment, not the command
+  2   refused -- the command could not be scored (bad input, an unresolvable resource, a namespace that does not exist, a cluster discovery could not fully enumerate); nothing was scored
+  3   COMPENSABLE -- destructive; every effect is restorable
+  4   TERMINAL -- at least one effect's data cannot come back
+  5   AUTHORITY -- the action itself changes who can act, not just what exists
+`
+
+// isHelpToken and containsHelpToken recognise every spelling of "show me
+// help" this build accepts. All three are honoured identically at the top
+// level and after "score": a caller who reaches for -h, --help or help
+// should get the same answer regardless of which one they reached for or
+// where in the arguments they put it.
+func isHelpToken(s string) bool {
+	return s == "-h" || s == "--help" || s == "help"
+}
+
+func containsHelpToken(toks []string) bool {
+	for _, t := range toks {
+		if isHelpToken(t) {
+			return true
+		}
+	}
+	return false
+}
+
+// printTopLevelHelp and printScoreHelp write to STDOUT and are the exit-0
+// path, deliberately unlike every refusal in this file, which writes to
+// stderr and exits 2 -- a caller piping --help into a pager, or checking
+// $? after asking for it, must not be told the request itself failed.
+func printTopLevelHelp(w io.Writer) {
+	fmt.Fprintln(w, usage)
+	fmt.Fprintln(w)
+	fmt.Fprint(w, exitCodeTable)
+}
+
+func printScoreHelp(w io.Writer, fs *flag.FlagSet) {
+	fmt.Fprintln(w, usage)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "flags:")
+	out := fs.Output()
+	fs.SetOutput(w)
+	fs.PrintDefaults()
+	fs.SetOutput(out)
+	fmt.Fprintln(w)
+	fmt.Fprint(w, exitCodeTable)
+}
+
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "refused: no subcommand given")
 		fmt.Fprintln(stderr, usage)
 		return exitCodeForError(errRefused)
+	}
+	if isHelpToken(args[0]) {
+		printTopLevelHelp(stdout)
+		return 0
 	}
 	if args[0] != "score" {
 		fmt.Fprintf(stderr, "refused: unknown subcommand %q\n", args[0])
@@ -96,6 +157,17 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	jsonOut := fs.Bool("json", false, "print the finding as JSON instead of the human-readable report")
 	allEffects := fs.Bool("all", false, "list every effect in the human-readable report instead of the default cap")
 	useStdin := fs.Bool("stdin", false, "read a JSON-encoded Action from stdin instead of a command string")
+
+	// Checked before fs.Parse, and against command/rest directly rather than
+	// relying on the flag package's own -h/-help handling: that path prints
+	// bare flag defaults to stderr and returns flag.ErrHelp, which this
+	// build would otherwise turn into a refusal and exit 2 -- the opposite
+	// of what asking for help should ever do.
+	if command == "help" || containsHelpToken(rest) {
+		printScoreHelp(stdout, fs)
+		return 0
+	}
+
 	if err := fs.Parse(rest); err != nil {
 		return exitCodeForError(errRefused)
 	}

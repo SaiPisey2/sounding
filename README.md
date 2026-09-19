@@ -8,6 +8,10 @@ sounding score 'delete ns checkout' [--snapshot DIR] [--kubeconfig PATH] [--json
 sounding score --stdin [--snapshot DIR] [--kubeconfig PATH] [--json] [--all]
 ```
 
+`sounding -h`, `sounding --help` and `sounding help` all print the usage
+block above plus the exit-code table below to stdout and exit 0; `sounding
+score -h` prints the same table alongside the flags.
+
 ## What it does
 
 Given a `kubectl`-shaped delete command, sounding lists every object in the
