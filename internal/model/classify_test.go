@@ -60,3 +60,21 @@ func TestAuthorityOutranksTerminal(t *testing.T) {
 		t.Error("ClassAuthority must sort above ClassTerminal")
 	}
 }
+
+func TestNewFindingClassifiesUnknownBasis(t *testing.T) {
+	effects := []Effect{
+		{Kind: "destroys", Basis: BasisComputed},
+		{Kind: "unanalysed", Basis: BasisUnknown},
+	}
+	got := NewFinding(Action{}, effects, ClassReversible)
+	if got.Class != ClassTerminal {
+		t.Errorf("NewFinding with unknown basis = %v, want ClassTerminal", got.Class)
+	}
+}
+
+func TestNewFindingPreservesFloor(t *testing.T) {
+	got := NewFinding(Action{}, []Effect{}, ClassCompensable)
+	if got.Class != ClassCompensable {
+		t.Errorf("NewFinding with empty effects = %v, want ClassCompensable (not zero value)", got.Class)
+	}
+}

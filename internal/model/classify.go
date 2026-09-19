@@ -12,7 +12,7 @@ func basisFloor(b Basis) Class {
 	case BasisComputed:
 		return ClassRead // computed evidence imposes no floor of its own
 	case BasisDeclared:
-		return ClassCompensable // somebody told us; that is not knowledge
+		return ClassCompensable // somebody told us it is destructive, even though they could be lying; an unanalyzed action has told us nothing
 	default:
 		return ClassTerminal // we did not look, so we must assume the worst
 	}
