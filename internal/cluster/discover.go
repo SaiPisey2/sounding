@@ -119,11 +119,12 @@ func ListableNamespaced(ctx context.Context, c *Clients) ([]Resource, error) {
 
 // ResolveResource matches a user-supplied resource string against the live
 // discovery data, which carries each resource's real plural, singular and
-// short names. The action parser that produces that string does only naive
-// plural normalisation (it cannot tell "ingress" from "ingresss"), so this is
-// where the real resolution happens. It refuses when the match is not
-// exactly one, naming the candidates -- guessing which resource was meant is
-// how a tool ends up scoring the wrong object.
+// short names. The action parser that produces that string does no
+// normalisation of its own -- it hands over exactly what the caller typed,
+// singular, plural, or a short name -- so this is where that string is
+// actually turned into a real, live resource. It refuses when the match is
+// not exactly one, naming the candidates -- guessing which resource was
+// meant is how a tool ends up scoring the wrong object.
 func ResolveResource(rs []Resource, s string) (Resource, error) {
 	var matches []Resource
 	for _, r := range rs {
