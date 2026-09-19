@@ -100,6 +100,12 @@ func TestListableNamespacedRefusesWhenAGroupFails(t *testing.T) {
 	}
 }
 
+// The fixture deliberately answers with two different groups (core v1 and
+// metrics.k8s.io/v1beta1). Asserting only a count and a resource name cannot
+// tell that apart from the same v1 pods served twice, so this checks each
+// group is actually represented -- the point of the test is that
+// ListableNamespaced gathers resources across groups, not that it returns
+// some number of things named "pods".
 func TestListableNamespacedSucceedsWhenEveryGroupAnswers(t *testing.T) {
 	c := newFakeCluster(t, http.StatusOK)
 	got, err := ListableNamespaced(context.Background(), c)
@@ -109,9 +115,18 @@ func TestListableNamespacedSucceedsWhenEveryGroupAnswers(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d resources, want 2 (core pods and metrics pods)", len(got))
 	}
+
+	kindByGroup := make(map[string]string)
 	for _, r := range got {
 		if r.GVR.Resource != "pods" {
 			t.Errorf("got unexpected resource %+v", r)
 		}
+		kindByGroup[r.GVR.Group] = r.Kind
+	}
+	if kindByGroup[""] != "Pod" {
+		t.Errorf("got %+v, want the core group's Pod represented", got)
+	}
+	if kindByGroup["metrics.k8s.io"] != "PodMetrics" {
+		t.Errorf("got %+v, want the metrics.k8s.io group's PodMetrics represented", got)
 	}
 }
