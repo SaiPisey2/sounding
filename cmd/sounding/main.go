@@ -16,6 +16,9 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/SaiPisey2/sounding/internal/action"
 	"github.com/SaiPisey2/sounding/internal/cascade"
 	"github.com/SaiPisey2/sounding/internal/cluster"
@@ -189,6 +192,10 @@ func score(ctx context.Context, act model.Action, kubeconfig, snapshotDir string
 		return model.Finding{}, fmt.Errorf("%w: %v", errRefused, err)
 	}
 
+	if err := namespaceMustExist(ctx, c, ns); err != nil {
+		return model.Finding{}, err
+	}
+
 	objs, err := cascade.Enumerate(ctx, c, resources, ns)
 	if err != nil {
 		return model.Finding{}, fmt.Errorf("%w: enumerating namespace %q: %v", errOperational, ns, err)
@@ -314,6 +321,30 @@ func targetNamespace(act model.Action, resources []cluster.Resource) (string, er
 		return "", err
 	}
 	return "", fmt.Errorf("delete %s has no analyzer yet -- only delete namespace is supported", resolved.GVR.Resource)
+}
+
+// namespaceMustExist refuses before any enumeration happens if ns does not
+// exist on the live cluster. Without this, "does not exist" and "exists and
+// is genuinely empty" are indistinguishable to cascade.Enumerate -- both
+// list zero objects across zero kinds -- so a typo'd namespace name would
+// score COMPENSABLE with a confident, scoreable verdict and exit 3, which a
+// gateway thresholding on exit code reads as a real recoverable deletion.
+// The two objects Kubernetes auto-creates in every real namespace (the
+// "default" ServiceAccount and the kube-root-ca.crt ConfigMap) are exactly
+// what would tell enumeration a namespace is real rather than absent, and
+// nothing before this checked for them. Get on the namespace object itself
+// is the one call that actually distinguishes the two cases, rather than
+// inferring it from what enumeration happened to find inside.
+func namespaceMustExist(ctx context.Context, c *cluster.Clients, ns string) error {
+	_, err := c.Typed.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+	*c.Calls++
+	if apierrors.IsNotFound(err) {
+		return fmt.Errorf("%w: namespace %q does not exist", errRefused, ns)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: checking namespace %q: %v", errOperational, ns, err)
+	}
+	return nil
 }
 
 func isNamespaceResource(s string) bool {

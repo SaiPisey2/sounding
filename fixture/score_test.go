@@ -99,6 +99,22 @@ func TestSnapshotDoesNotChangeTheClass(t *testing.T) {
 	}
 }
 
+// A namespace that was never created and a namespace that exists but is
+// genuinely empty are indistinguishable to cascade.Enumerate alone -- both
+// list zero objects across zero kinds -- so before this fix a typo'd
+// namespace name scored COMPENSABLE with exit 3, exactly like a real, empty,
+// restorable namespace. A gateway thresholding on exit code cannot tell the
+// two apart without this refusal.
+func TestNonexistentNamespaceRefusesRatherThanScoring(t *testing.T) {
+	out, code := score(t, "delete ns definitely-not-a-real-namespace-xyz")
+	if code != 2 {
+		t.Errorf("exit = %d, want 2 (refused), got a scored verdict:\n%s", code, out)
+	}
+	if !strings.Contains(out, "definitely-not-a-real-namespace-xyz") {
+		t.Errorf("refusal must name the missing namespace:\n%s", out)
+	}
+}
+
 func TestAnUnanalysedVerbRefusesAndNamesIt(t *testing.T) {
 	out, code := score(t, "scale deployment api --replicas=0 -n sounding-demo")
 	if code != 2 {

@@ -2,13 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/SaiPisey2/sounding/internal/cascade"
 	"github.com/SaiPisey2/sounding/internal/cluster"
@@ -213,5 +218,40 @@ func TestTargetNamespacePropagatesAnAmbiguousResourceRefusal(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ingresses") || !strings.Contains(err.Error(), "ingressclasses") {
 		t.Errorf("refusal must name both candidates: %v", err)
+	}
+}
+
+// namespaceMustExist is the guard that separates "this namespace does not
+// exist" from "this namespace exists and is genuinely empty" -- the two
+// states cascade.Enumerate alone cannot tell apart, since both list zero
+// objects across zero kinds. A fake clientset stands in for the live
+// cluster here because namespaceMustExist's own contract is entirely about
+// what it does with a Get's result, not about discovery or enumeration.
+func TestNamespaceMustExistRefusesOnNotFound(t *testing.T) {
+	c := &cluster.Clients{Typed: fake.NewSimpleClientset(), Calls: new(int64)}
+	err := namespaceMustExist(context.Background(), c, "definitely-not-a-real-namespace-xyz")
+	if err == nil {
+		t.Fatal("want a refusal for a namespace that does not exist, got nil")
+	}
+	if !errors.Is(err, errRefused) {
+		t.Errorf("error %v does not wrap errRefused", err)
+	}
+	if !strings.Contains(err.Error(), "definitely-not-a-real-namespace-xyz") {
+		t.Errorf("refusal must name the missing namespace: %v", err)
+	}
+	if exitCodeForError(err) != 2 {
+		t.Errorf("exit code = %d, want 2", exitCodeForError(err))
+	}
+}
+
+func TestNamespaceMustExistPassesWhenTheNamespaceIsPresent(t *testing.T) {
+	c := &cluster.Clients{
+		Typed: fake.NewSimpleClientset(&corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: "sounding-demo"},
+		}),
+		Calls: new(int64),
+	}
+	if err := namespaceMustExist(context.Background(), c, "sounding-demo"); err != nil {
+		t.Errorf("want no error for a namespace that exists, got %v", err)
 	}
 }

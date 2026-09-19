@@ -28,11 +28,15 @@ import (
 // reach those, and hand-building a REST path from a Target's fields would
 // have to re-implement the same name/namespace escaping this client already
 // gets right.
+// Typed is kubernetes.Interface, not the concrete *kubernetes.Clientset
+// New builds, so a test can substitute k8s.io/client-go/kubernetes/fake's
+// clientset for it without a live server -- every real call site here only
+// ever reaches CoreV1(), which the interface already exposes in full.
 type Clients struct {
 	Discovery *discovery.DiscoveryClient
 	Dynamic   dynamic.Interface
 	Metadata  metadata.Interface
-	Typed     *kubernetes.Clientset
+	Typed     kubernetes.Interface
 	Calls     *int64
 }
 
