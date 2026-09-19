@@ -4,6 +4,7 @@ package fixture
 
 import (
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -43,6 +44,16 @@ func TestRetainOnlyNamespaceIsCompensable(t *testing.T) {
 	}
 	if code != 3 {
 		t.Errorf("exit = %d, want 3", code)
+	}
+	// Its sibling (TestReclaimPolicyFlipsTheClassAgainstALiveCluster) checks
+	// that the volume actually responsible for a verdict is named. Without
+	// this, COMPENSABLE and exit 3 are also exactly what "delete
+	// namespace"'s own verb floor produces on their own, with the PVC->PV
+	// join never consulted at all -- this test would keep passing even with
+	// volume.Join disabled outright, catching an object over-reported but
+	// never one silently dropped, which is the direction that loses data.
+	if !strings.Contains(out, "pv-retain") {
+		t.Errorf("report must name the volume examined, not just agree with the verb floor by coincidence:\n%s", out)
 	}
 }
 
@@ -104,6 +115,87 @@ func TestTwoRunsAgree(t *testing.T) {
 	if ca != cb || classOf(a) != classOf(b) {
 		t.Errorf("two consecutive scans disagreed")
 	}
+}
+
+// sounding-demo's fixture is known by construction, so a live cluster is
+// the one place its object count has an exact right answer rather than a
+// merely plausible-looking one. Events are the one exception: how many a
+// real kubelet emits while getting two pods to Running -- scheduling,
+// pulling an image that may or may not already be cached, starting each
+// container -- is a property of cluster timing, not of the seed, and it
+// measurably differs between two runs seconds apart on the same cluster (11
+// vs. a different count observed while writing this). So this pins every
+// OTHER kind's count exactly, built from named constants that mirror
+// fixture/seed/02-sounding-demo.yaml plus the well-known objects
+// Kubernetes and its own controllers add on top of it, and treats the
+// Event count as a floor rather than an exact value: enumerating zero
+// Events would still be wrong and this catches that, but enumerating a
+// different positive number on the next run is not a regression.
+const (
+	seedDeployments     = 1 // api
+	seedReplicaSets     = 1 // api's one ReplicaSet; nothing here ever triggers a rollout
+	seedPods            = 2 // api's spec.replicas
+	seedServices        = 1 // api
+	seedEndpoints       = 1 // one per Service, from the endpoints controller
+	seedEndpointSlices  = 1 // one per Service, from the endpointslice controller
+	seedConfigMaps      = 2 // api-config (seeded) + kube-root-ca.crt (every namespace gets one)
+	seedSecrets         = 1 // api-secret
+	seedServiceAccounts = 1 // "default", created per namespace
+	seedPVCs            = 2 // data-retain, data-delete
+
+	// One volume.Join effect per PVC -- destroys-data or detaches-data,
+	// naming the bound PersistentVolume -- counted separately from the
+	// PVC's own "destroys" effect already counted in seedPVCs above.
+	seedVolumeJoinEffects = 2
+
+	seedMinEvents = 1
+)
+
+var seedNonEventEffects = seedDeployments + seedReplicaSets + seedPods + seedServices +
+	seedEndpoints + seedEndpointSlices + seedConfigMaps + seedSecrets +
+	seedServiceAccounts + seedPVCs + seedVolumeJoinEffects
+
+// This is the assertion that would have caught the Event double-enumeration
+// bug on day one: that bug inflated exactly this number (the report's own
+// "objects N" count), while every other assertion in this file -- class,
+// exit code, which volume is named, ordering -- stayed satisfied throughout,
+// because none of them look at how many objects there are, only at which
+// ones and in what order.
+func TestObjectCountMatchesKnownConstruction(t *testing.T) {
+	out, _ := score(t, "delete ns sounding-demo", "--all")
+	total := objectsHeaderCount(t, out)
+	events := strings.Count(out, "Event/")
+	nonEvent := total - events
+
+	if nonEvent != seedNonEventEffects {
+		t.Errorf("non-Event effect count = %d, want %d (sounding-demo is known by construction; see the seed* constants):\n%s", nonEvent, seedNonEventEffects, out)
+	}
+	if events < seedMinEvents {
+		t.Errorf("event count = %d, want at least %d -- Events must still be enumerated, just not pinned exactly:\n%s", events, seedMinEvents, out)
+	}
+}
+
+// objectsHeaderCount parses the "objects N across K kinds" line report.Write
+// always prints, rather than counting effect lines by eye: the header's own
+// count is what a reader actually sees and is the value this test exists to
+// pin, and parsing it this way also catches a report that silently drops
+// the header line itself.
+func objectsHeaderCount(t *testing.T, out string) int {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		for i, f := range fields {
+			if f == "objects" && i+1 < len(fields) {
+				n, err := strconv.Atoi(fields[i+1])
+				if err != nil {
+					t.Fatalf("objects line has a non-numeric count %q:\n%s", fields[i+1], out)
+				}
+				return n
+			}
+		}
+	}
+	t.Fatalf("report has no \"objects N across K kinds\" line:\n%s", out)
+	return 0
 }
 
 func classOf(out string) string {
