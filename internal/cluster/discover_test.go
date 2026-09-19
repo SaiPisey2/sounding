@@ -31,11 +31,18 @@ func TestSelectListableNamespaced(t *testing.T) {
 // A subresource has a slash in its name and listing it is meaningless; a
 // resource without the list verb cannot be enumerated at all. Both must be
 // skipped, or the enumeration errors on things that were never objects.
+//
+// pods/log deliberately carries the list verb: real clusters essentially
+// never expose list on a subresource, so a fixture built only from realistic
+// data (like pods/exec above, which lacks list) would leave the slash check
+// unpinned -- hasVerb alone would already exclude every subresource here,
+// and disabling the slash check would go unnoticed.
 func TestSelectListableSkipsSubresourcesAndUnlistables(t *testing.T) {
 	lists := []*metav1.APIResourceList{{
 		GroupVersion: "v1",
 		APIResources: []metav1.APIResource{
 			{Name: "pods/exec", Kind: "Pod", Namespaced: true, Verbs: []string{"create"}},
+			{Name: "pods/log", Kind: "Pod", Namespaced: true, Verbs: []string{"list"}},
 			{Name: "events", Kind: "Event", Namespaced: true, Verbs: []string{"list"}},
 		},
 	}}
