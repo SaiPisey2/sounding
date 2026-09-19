@@ -95,14 +95,32 @@ func write(w io.Writer, f model.Finding, cap int) {
 	}
 }
 
+// alwaysShown holds the effect kinds a cap must never hide, regardless of
+// their position in the list:
+//
+//   - "destroys-data" -- data is gone and unrecoverable. Rare even in a
+//     huge namespace, and the single fact most likely to change what a
+//     reader decides to do.
+//   - "unknown-data-fate" -- sounding does NOT know whether the data
+//     survives (an unrecognised reclaim policy, or an unbound claim).
+//     Hiding this one is worse than hiding a known-destructive effect:
+//     summarising a destroys-data effect at least tells the reader there
+//     is a known loss to look into; summarising an unknown-data-fate one
+//     hides the fact that there is anything to look into at all.
+//
+// "detaches-data" is deliberately NOT exempt: it means the data survives,
+// which is the one data-related outcome where summarising it behind
+// "...and N more" costs the reader nothing.
+var alwaysShown = map[string]bool{
+	"destroys-data":     true,
+	"unknown-data-fate": true,
+}
+
 // writeEffects lists effects, honouring cap (unlimitedEffects for no cap).
-// A "destroys-data" effect is never among the ones a cap hides: it is the
-// kind that decides whether data is recoverable at all, it is rare even in
-// a huge namespace, and hiding one behind "...and N more" would bury the
-// single fact most likely to change what a reader decides to do. Such an
-// effect is shown regardless of its position and is counted against the
-// cap like anything else that is shown, so the "N more" count stays exact
-// rather than silently drifting once a forced inclusion is involved.
+// An effect whose kind is in alwaysShown is shown regardless of its
+// position and is counted against the cap like anything else that is
+// shown, so the "N more" count stays exact rather than silently drifting
+// once a forced inclusion is involved.
 func writeEffects(w io.Writer, effects []model.Effect, cap int) {
 	if len(effects) == 0 {
 		return
@@ -111,7 +129,7 @@ func writeEffects(w io.Writer, effects []model.Effect, cap int) {
 	body := tabwriter.NewWriter(w, 0, 4, 3, ' ', 0)
 	shown := 0
 	for i, e := range effects {
-		if cap < 0 || i < cap || e.Kind == "destroys-data" {
+		if cap < 0 || i < cap || alwaysShown[e.Kind] {
 			fmt.Fprintf(body, "  %s\t%s/%s\t%s\n", e.Kind, e.Object.Kind, e.Object.Name, e.Explanation)
 			shown++
 		}

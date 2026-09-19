@@ -161,6 +161,58 @@ func TestCappedListingNeverHidesADestroysDataEffect(t *testing.T) {
 	}
 }
 
+// unknown-data-fate means sounding does NOT know whether the data behind
+// an object survives -- an unrecognised reclaim policy, or an unbound
+// claim. Hiding this behind "...and N more" is worse than hiding a known
+// destroys-data effect: the reader cannot even know there is something to
+// look into. It must never be among the effects a cap hides, even when its
+// position in the list is well past the cap.
+func TestCappedListingNeverHidesAnUnknownDataFateEffect(t *testing.T) {
+	f := finding()
+	effects := manyEffects(24)
+	effects = append(effects, model.Effect{
+		Kind: "unknown-data-fate", Basis: model.BasisUnknown,
+		Object:      model.Target{Kind: "PersistentVolumeClaim", Name: "pvc-buried"},
+		Explanation: "no spec.volumeName",
+	})
+	f.Effects = effects // 25 effects; the unknown-data-fate one is at index 24, past the cap of 20
+
+	var b bytes.Buffer
+	Write(&b, f)
+	s := b.String()
+	if !strings.Contains(s, "PersistentVolumeClaim/pvc-buried") {
+		t.Errorf("an unknown-data-fate effect past the cap must still be shown:\n%s", s)
+	}
+	// 20 capped + 1 forced unknown-data-fate = 21 shown, so 4 remain hidden.
+	if !strings.Contains(s, "... and 4 more (use --all to list every effect)") {
+		t.Errorf("the forced unknown-data-fate effect must count against the cap so the remainder stays exact:\n%s", s)
+	}
+}
+
+// detaches-data means the data survives -- the one data-related outcome
+// where summarising it behind the cap costs the reader nothing. It must
+// stay under the ordinary cap, not be forced through like the other two.
+func TestCappedListingStillHidesADetachesDataEffectPastTheCap(t *testing.T) {
+	f := finding()
+	effects := manyEffects(24)
+	effects = append(effects, model.Effect{
+		Kind: "detaches-data", Basis: model.BasisComputed,
+		Object:      model.Target{Kind: "PersistentVolume", Name: "pv-retained"},
+		Explanation: "reclaimPolicy=Retain",
+	})
+	f.Effects = effects
+
+	var b bytes.Buffer
+	Write(&b, f)
+	s := b.String()
+	if strings.Contains(s, "pv-retained") {
+		t.Errorf("a detaches-data effect past the cap should be summarised, not forced through:\n%s", s)
+	}
+	if !strings.Contains(s, "... and 5 more (use --all to list every effect)") {
+		t.Errorf("the ordinary cap must still apply to detaches-data:\n%s", s)
+	}
+}
+
 // "Nothing was executed" exists so a blast-radius listing is never mistaken
 // for a record of something that already happened. On a real cluster the
 // listing can run to thousands of lines, so the sentence is worthless
