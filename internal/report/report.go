@@ -78,7 +78,7 @@ func write(w io.Writer, f model.Finding, cap int) {
 	// it only appears after that scroll. Printing it first means it is
 	// seen whether the listing is capped, uncapped, or piped somewhere
 	// nobody watches live.
-	fmt.Fprintln(w, "  Nothing was executed. sounding holds no credential that could.")
+	fmt.Fprintln(w, "  Nothing was executed. sounding issues no write, delete or patch against a cluster.")
 	fmt.Fprintln(w)
 
 	writeEffects(w, f.Effects, cap)

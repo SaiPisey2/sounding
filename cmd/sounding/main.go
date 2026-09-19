@@ -1,6 +1,8 @@
 // Command sounding scores a Kubernetes mutation against live cluster state
-// and reports what it would destroy. It executes nothing and holds no
-// credential that could -- it needs list and get, nothing else.
+// and reports what it would destroy. It issues no write, delete or patch
+// against a cluster -- it needs list and get, nothing else. A cluster-admin
+// credential handed to this binary could still perform the mutation being
+// scored; scope it to list and get so that it cannot.
 package main
 
 import (

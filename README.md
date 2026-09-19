@@ -35,9 +35,16 @@ it is `Retain`. Nothing else about the namespace has to change.
 
 - It executes nothing. It never issues a write, a delete, or a patch against
   the cluster it scores.
-- It holds no credential that could write: it needs `list` and `get`,
-  nothing else (see `internal/cluster/readonly_test.go`, which checks this
-  mechanically rather than by review).
+- It issues no write, delete or patch against a cluster (see
+  `internal/cluster/readonly_test.go`, which checks this mechanically rather
+  than by review). It needs only `list` and `get` to do its job, and the
+  credential you run it with should be scoped to exactly those two verbs --
+  `cluster.New` builds clients straight from whatever kubeconfig it is
+  given, with no scoping or impersonation of its own, so a credential wider
+  than `list`/`get` (a cluster-admin context, for instance) could still
+  perform the very mutation being scored. Read-only code is not the same
+  thing as a read-only credential; only the credential you choose makes it
+  one.
 - `--snapshot DIR` writes an undo bundle -- the real manifests of every
   object that would be destroyed, plus a restore ordering -- to a local
   directory. It restores *objects*. It does not, and cannot, restore the
@@ -57,7 +64,7 @@ delete namespaces/checkout
   objects   41 across 12 kinds
   scanned   2026-09-19T21:26:59Z, 39 api calls
 
-  Nothing was executed. sounding holds no credential that could.
+  Nothing was executed. sounding issues no write, delete or patch against a cluster.
 
   destroys        ConfigMap/checkout-config          in the namespace
   ...
