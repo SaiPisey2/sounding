@@ -66,12 +66,21 @@ func ParseCommand(s string) (model.Action, error) {
 		}
 	}
 
-	// Check if the first token is "namespace" or "ns".
+	// "namespace"/"ns" is the one resource this parser normalises itself,
+	// because it is not a guess: it is this tool's own hard-coded name for
+	// the single cluster-scoped kind it understands, and both spellings
+	// mean exactly the same thing regardless of what a live cluster calls
+	// anything else. Every other resource is kept EXACTLY as typed, with no
+	// pluralisation attempted anywhere in this function. It is handed to
+	// cluster.ResolveResource later, which matches it against a live
+	// server's real plural, singular and short names; guessing a plural
+	// here would only hand the resolver a wrong string instead of the
+	// right one -- a different bug with the same shape as the one this
+	// replaces.
 	if tokens[0] == "namespace" || tokens[0] == "ns" {
 		resource = "namespaces"
 		idx = 1
 	} else {
-		// It's a regular resource.
 		resource = tokens[0]
 		idx = 1
 	}
@@ -116,18 +125,6 @@ func ParseCommand(s string) (model.Action, error) {
 			}
 			return model.Action{}, fmt.Errorf("%w: unexpected positional argument %q", ErrAmbiguous, flag)
 		}
-	}
-
-	// Normalize the resource name: ns -> namespaces, singular -> plural.
-	if resource == "ns" {
-		resource = "namespaces"
-	} else if !strings.HasSuffix(resource, "s") {
-		// Best-effort pluralization: append 's' if not already plural.
-		// Note: wrong for irregular plurals such as 'ingress' -> 'ingresses' and
-		// 'endpoints'. The resource-discovery resolver carries each resource's real
-		// plural, singular and short names, and refuses a string that does not match
-		// exactly one of them. Do not fix this with a hand-maintained table here.
-		resource = resource + "s"
 	}
 
 	return model.Action{

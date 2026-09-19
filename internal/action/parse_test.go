@@ -14,9 +14,17 @@ func TestParseCommand(t *testing.T) {
 		{"namespace long form", "delete namespace prod-payments", "namespaces", "", "prod-payments"},
 		{"namespace alias", "delete ns prod-payments", "namespaces", "", "prod-payments"},
 		{"with kubectl prefix", "kubectl delete ns prod-payments", "namespaces", "", "prod-payments"},
-		{"namespaced resource", "delete deployment api -n prod", "deployments", "prod", "api"},
-		{"long namespace flag", "delete deployment api --namespace prod", "deployments", "prod", "api"},
-		{"singular is normalised", "delete deployments api -n prod", "deployments", "prod", "api"},
+		// A singular resource is stored exactly as typed, not pluralised --
+		// resolving it against a live cluster's real plural is
+		// cluster.ResolveResource's job, not a guess made here.
+		{"namespaced resource, stored exactly as typed", "delete deployment api -n prod", "deployment", "prod", "api"},
+		{"long namespace flag", "delete deployment api --namespace prod", "deployment", "prod", "api"},
+		{"an already-plural resource is left unchanged", "delete deployments api -n prod", "deployments", "prod", "api"},
+		// The naive pluralisation this used to do turned "ingress" into
+		// "ingresss", which matches no real resource. Storing it verbatim
+		// is the fix: cluster.ResolveResource can match "ingress" against
+		// a real resource's singular name; nothing can match "ingresss".
+		{"irregular resource is left exactly as typed, not mangled", "delete ingress web -n prod", "ingress", "prod", "web"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
