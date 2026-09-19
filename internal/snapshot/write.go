@@ -15,10 +15,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/SaiPisey2/sounding/internal/cascade"
 	"github.com/SaiPisey2/sounding/internal/cluster"
@@ -107,27 +109,29 @@ func strip(raw []byte) ([]byte, error) {
 	return json.MarshalIndent(obj, "", "  ")
 }
 
-// fetch retrieves an object's full body. It goes through the discovery
-// client's own REST client rather than a resource-typed one: objs carries
-// whatever GVR the live cluster's discovery reported, which this tool never
-// compiles against, so a typed client cannot reach most of it. Building the
-// request path from the target and reading Raw() bytes back sidesteps
-// decoding into any Go type sounding knows about -- the bytes the server
-// hands back are exactly what a later apply needs to see, not this tool's
-// understanding of the shape.
+// fetch retrieves an object's full body through the dynamic client: objs
+// carries whatever GVR the live cluster's discovery reported, which this
+// tool never compiles against, so a typed client cannot reach most of it,
+// and unstructured is the only representation a CRD's unknown-by-definition
+// Go type can be read into anyway.
+//
+// This also has to be trusted with a name this tool did not choose. Hand-
+// building the request path here once did that with path.Join, which
+// *cleans* a segment like ".." or "a/b" into a different, valid path instead
+// of rejecting it -- so a crafted name could fetch a real but wrong object
+// and have it written into the bundle under the name that was asked for.
+// The dynamic client's own request builder validates the name as an opaque
+// path segment and refuses one that contains "/" or equals "." or ".."
+// before any request is sent, which removes the whole class rather than
+// patching the one path this tool happened to build by hand.
 func fetch(ctx context.Context, c *cluster.Clients, t model.Target) ([]byte, error) {
-	var p string
-	if t.Group == "" {
-		p = path.Join("/api", t.Version, "namespaces", t.Namespace, t.Resource, t.Name)
-	} else {
-		p = path.Join("/apis", t.Group, t.Version, "namespaces", t.Namespace, t.Resource, t.Name)
-	}
-	raw, err := c.Discovery.RESTClient().Get().AbsPath(p).Do(ctx).Raw()
+	gvr := schema.GroupVersionResource{Group: t.Group, Version: t.Version, Resource: t.Resource}
+	u, err := c.Dynamic.Resource(gvr).Namespace(t.Namespace).Get(ctx, t.Name, metav1.GetOptions{})
 	*c.Calls++
 	if err != nil {
 		return nil, err
 	}
-	return raw, nil
+	return u.MarshalJSON()
 }
 
 // Write fetches the full body of every object and writes it to dir, plus a
