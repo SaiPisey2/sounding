@@ -236,10 +236,10 @@ func score(ctx context.Context, act model.Action, kubeconfig, snapshotDir string
 // classify composes the final class from the verb's own floor and the
 // worst class the volume join found, then builds the Finding through the
 // package's one constructor. It is pulled out of score as its own function
-// so the composition rule -- floor := max(verbFloor(), volClass) -- can be
-// exercised directly, without a live cluster, by a test that would
-// otherwise have no way to catch a regression here: dropping verbFloor()
-// in favour of model.ClassRead compiles cleanly and only shows up as every
+// so the composition rule -- floor := max(verbFloor(act.Verb), volClass) --
+// can be exercised directly, without a live cluster, by a test that would
+// otherwise have no way to catch a regression here: bypassing verbFloor in
+// favour of model.ClassRead compiles cleanly and only shows up as every
 // namespace deletion reporting the single most permissive class there is.
 func classify(act model.Action, effects []model.Effect, volClass model.Class) (model.Finding, error) {
 	floor, err := verbFloor(act.Verb)
