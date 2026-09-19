@@ -27,7 +27,15 @@ func Write(w io.Writer, f model.Finding) {
 
 	header := tabwriter.NewWriter(w, 0, 4, 3, ' ', 0)
 	fmt.Fprintf(header, "  class\t%s\n", f.Class)
-	fmt.Fprintf(header, "  basis\t%s (%d/%d effects)\n", basis, matching, total)
+	if total == 0 {
+		// "computed (0/0 effects)" credits evidence that was never
+		// gathered -- zero effects is not a basis at all, it is the
+		// absence of one, and the two must not read the same.
+		fmt.Fprintf(header, "  basis\tno effects observed\n")
+	} else {
+		fmt.Fprintf(header, "  basis\t%s (%d/%d effects)\n", basis, matching, total)
+	}
+	fmt.Fprintf(header, "  objects\t%d across %d kinds\n", total, len(distinctKinds(f.Effects)))
 	fmt.Fprintf(header, "  scanned\t%s, %d api calls\n", f.Scanned.UTC().Format(time.RFC3339), f.APICalls)
 	header.Flush()
 	fmt.Fprintln(w)
@@ -86,6 +94,19 @@ func summarizeBasis(effects []model.Effect) (label string, matching, total int) 
 		}
 	}
 	return string(worst), matching, total
+}
+
+// distinctKinds returns the set of object kinds present across effects, so
+// the report can say "N across K kinds" instead of leaving a reader to
+// count a table by eye -- and so "zero" is stated as 0 objects across 0
+// kinds rather than by an empty section nobody can tell apart from a
+// report that simply forgot to render one.
+func distinctKinds(effects []model.Effect) map[string]bool {
+	kinds := make(map[string]bool)
+	for _, e := range effects {
+		kinds[e.Object.Kind] = true
+	}
+	return kinds
 }
 
 func basisRank(b model.Basis) int {
