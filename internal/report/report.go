@@ -116,22 +116,46 @@ var alwaysShown = map[string]bool{
 	"unknown-data-fate": true,
 }
 
+// deprioritizedKinds holds object kinds that must not compete for the
+// cap's scarce visible slots while anything else is available. Events are
+// enumerated exactly like any other namespaced resource, but a namespace
+// under ordinary Pod-lifecycle churn can carry dozens of them, while the
+// thing an operator is actually asking "what will this destroy" about --
+// a Deployment, a ReplicaSet, a Pod -- is comparatively rare. Left to a
+// purely positional cap, Events crowd every workload out: one run against
+// a real cluster filled all 20 visible slots with 15 Events, 2 PVCs, 2
+// ConfigMaps and a PersistentVolume -- no Deployment, no ReplicaSet, no
+// Pod, the report's twenty most valuable lines spent on its least valuable
+// objects.
+//
+// This is deliberately narrow. EndpointSlice and ControllerRevision were
+// considered and left out: both CAN accumulate, but neither combines "very
+// high count relative to workloads" with "near-zero relevance to the
+// question this report answers" as unambiguously as Event does, and
+// nothing has shown them causing the same crowding on a real cluster.
+var deprioritizedKinds = map[string]bool{
+	"Event": true,
+}
+
 // writeEffects lists effects, honouring cap (unlimitedEffects for no cap).
-// An effect whose kind is in alwaysShown is shown regardless of its
-// position and is counted against the cap like anything else that is
-// shown, so the "N more" count stays exact rather than silently drifting
-// once a forced inclusion is involved.
+// It renders in exactly the order effects arrives -- cascade.Order's
+// owner-first sequence, restored in the previous fix round, must survive
+// selecting which effects to show. selectShown decides the WHICH; this
+// function only decides whether each already-decided index gets printed,
+// walking the slice once in its original order.
 func writeEffects(w io.Writer, effects []model.Effect, cap int) {
 	if len(effects) == 0 {
 		return
 	}
 
+	shown := selectShown(effects, cap)
+
 	body := tabwriter.NewWriter(w, 0, 4, 3, ' ', 0)
-	shown := 0
+	count := 0
 	for i, e := range effects {
-		if cap < 0 || i < cap || alwaysShown[e.Kind] {
+		if shown[i] {
 			fmt.Fprintf(body, "  %s\t%s/%s\t%s\n", e.Kind, e.Object.Kind, e.Object.Name, e.Explanation)
-			shown++
+			count++
 		}
 	}
 	body.Flush()
@@ -139,10 +163,61 @@ func writeEffects(w io.Writer, effects []model.Effect, cap int) {
 	// The count here must be exact, not approximate: a tool whose entire
 	// job is exact counts cannot round off the one number describing what
 	// its own report chose not to show.
-	if hidden := len(effects) - shown; hidden > 0 {
+	if hidden := len(effects) - count; hidden > 0 {
 		fmt.Fprintf(w, "  ... and %d more (use --all to list every effect)\n", hidden)
 	}
 	fmt.Fprintln(w)
+}
+
+// selectShown decides WHICH effects fill the cap; it never reorders
+// anything -- the caller renders the original slice in its original
+// order, checking this result index by index. Three tiers, in priority
+// order:
+//
+//  1. alwaysShown effects (destroys-data, unknown-data-fate) are chosen
+//     unconditionally, exactly as in the previous two fix rounds, and do
+//     not draw against the ordinary budget below.
+//  2. Ordinary effects -- anything not in tier 1 or 3 -- claim the
+//     ordinary budget (cap slots) first, in their original order.
+//  3. Deprioritized effects (Event) only receive whatever budget tier 2
+//     did not use, also in their original order.
+//
+// Splitting selection into three single passes over the same slice, each
+// keyed off what the previous pass already claimed, is what keeps a
+// workload from ever losing a slot to an Event while an ordinary slot
+// still exists, without touching the render order at all.
+func selectShown(effects []model.Effect, cap int) []bool {
+	shown := make([]bool, len(effects))
+	if cap < 0 {
+		for i := range shown {
+			shown[i] = true
+		}
+		return shown
+	}
+
+	for i, e := range effects {
+		if alwaysShown[e.Kind] {
+			shown[i] = true
+		}
+	}
+
+	budget := cap
+	for i, e := range effects {
+		if shown[i] || budget <= 0 || deprioritizedKinds[e.Object.Kind] {
+			continue
+		}
+		shown[i] = true
+		budget--
+	}
+	for i, e := range effects {
+		if shown[i] || budget <= 0 || !deprioritizedKinds[e.Object.Kind] {
+			continue
+		}
+		shown[i] = true
+		budget--
+	}
+
+	return shown
 }
 
 // summarizeBasis names the least reliable basis present -- unknown is worse

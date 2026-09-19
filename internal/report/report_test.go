@@ -213,6 +213,85 @@ func TestCappedListingStillHidesADetachesDataEffectPastTheCap(t *testing.T) {
 	}
 }
 
+// eventsAndWorkloads builds the fixture shape that broke on a real
+// cluster: a run of Events -- ordinary Pod-lifecycle churn, unrelated to
+// the specific thing being scored -- followed by the actual workload
+// chain an operator cares about. numEvents is deliberately larger than
+// defaultEffectCap, so a purely positional cap would fill every visible
+// slot with Events alone and hide the workloads entirely.
+func eventsAndWorkloads(numEvents int) []model.Effect {
+	effects := make([]model.Effect, 0, numEvents+3)
+	for i := 0; i < numEvents; i++ {
+		effects = append(effects, model.Effect{
+			Kind: "destroys", Basis: model.BasisComputed,
+			Object:      model.Target{Kind: "Event", Name: fmt.Sprintf("evt-%d", i)},
+			Explanation: "in the namespace",
+		})
+	}
+	return append(effects,
+		model.Effect{Kind: "destroys", Basis: model.BasisComputed, Object: model.Target{Kind: "Deployment", Name: "api"}, Explanation: "in the namespace"},
+		model.Effect{Kind: "destroys", Basis: model.BasisComputed, Object: model.Target{Kind: "ReplicaSet", Name: "api-1"}, Explanation: "in the namespace"},
+		model.Effect{Kind: "destroys", Basis: model.BasisComputed, Object: model.Target{Kind: "Pod", Name: "api-1-x"}, Explanation: "in the namespace"},
+	)
+}
+
+// This is the bug a real cluster surfaced after round 4's ordering fix:
+// with 25 Events ahead of 3 workloads in cascade order, a purely
+// positional cap fills all 20 visible slots with Events and hides every
+// workload -- the exact "15 Event, 2 PVC, 2 ConfigMap, 1 PV, no
+// Deployment/ReplicaSet/Pod" shape observed against the fixture cluster.
+func TestVisibleListingDeprioritizesEventsInFavourOfWorkloads(t *testing.T) {
+	f := finding()
+	f.Effects = eventsAndWorkloads(25) // 28 effects total, cap 20
+
+	var b bytes.Buffer
+	Write(&b, f)
+	s := b.String()
+	for _, want := range []string{"Deployment/api", "ReplicaSet/api-1", "Pod/api-1-x"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("workload %q must be visible even with many Events present:\n%s", want, s)
+		}
+	}
+}
+
+// Deprioritizing Events changes WHICH effects fill the cap, not how many.
+// With 25 Events + 3 workloads = 28 effects and a cap of 20, the 3
+// workloads claim 3 of the budget and the remaining 17 slots go to the
+// first 17 Events, leaving 8 Events hidden -- the remainder count must
+// still be exact under this selection.
+func TestRemainderCountIsExactWhenEventsAreDeprioritized(t *testing.T) {
+	f := finding()
+	f.Effects = eventsAndWorkloads(25)
+
+	var b bytes.Buffer
+	Write(&b, f)
+	s := b.String()
+	if !strings.Contains(s, "... and 8 more (use --all to list every effect)") {
+		t.Errorf("remainder count must be exact once Events are deprioritized (25 events + 3 workloads, cap 20, 3 workloads + 17 events shown -> 8 hidden):\n%s", s)
+	}
+}
+
+// Nothing about an Event changes under --all: it is still enumerated,
+// still counted, and still shown in full -- only its claim on the
+// default-cap listing is deprioritized.
+func TestWriteAllStillShowsEveryEvent(t *testing.T) {
+	f := finding()
+	f.Effects = eventsAndWorkloads(25)
+
+	var b bytes.Buffer
+	WriteAll(&b, f)
+	s := b.String()
+	if strings.Contains(s, "more (use --all") {
+		t.Errorf("--all must not itself be capped:\n%s", s)
+	}
+	for i := 0; i < 25; i++ {
+		want := fmt.Sprintf("Event/evt-%d", i)
+		if !strings.Contains(s, want) {
+			t.Errorf("--all must show every Event, including %q:\n%s", want, s)
+		}
+	}
+}
+
 // "Nothing was executed" exists so a blast-radius listing is never mistaken
 // for a record of something that already happened. On a real cluster the
 // listing can run to thousands of lines, so the sentence is worthless
