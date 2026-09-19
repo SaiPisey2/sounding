@@ -56,8 +56,8 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-const usage = "usage: sounding score '<command>' [--snapshot DIR] [--kubeconfig PATH] [--json]\n" +
-	"       sounding score --stdin [--snapshot DIR] [--kubeconfig PATH] [--json]"
+const usage = "usage: sounding score '<command>' [--snapshot DIR] [--kubeconfig PATH] [--json] [--all]\n" +
+	"       sounding score --stdin [--snapshot DIR] [--kubeconfig PATH] [--json] [--all]"
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -89,6 +89,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	snapshotDir := fs.String("snapshot", "", "write an undo bundle of every object that would be destroyed to this directory")
 	kubeconfig := fs.String("kubeconfig", "", "path to a kubeconfig file; empty means the in-cluster config or the environment default")
 	jsonOut := fs.Bool("json", false, "print the finding as JSON instead of the human-readable report")
+	allEffects := fs.Bool("all", false, "list every effect in the human-readable report instead of the default cap")
 	useStdin := fs.Bool("stdin", false, "read a JSON-encoded Action from stdin instead of a command string")
 	if err := fs.Parse(rest); err != nil {
 		return exitCodeForError(errRefused)
@@ -121,13 +122,19 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return exitCodeForError(err)
 	}
 
-	if *jsonOut {
+	switch {
+	case *jsonOut:
+		// --json was never capped: it encodes every effect regardless of
+		// --all, since a machine reader piping structured output does not
+		// scroll past a safety line the way a terminal does.
 		if err := writeJSON(stdout, finding); err != nil {
 			wrapped := fmt.Errorf("%w: encoding finding as json: %v", errOperational, err)
 			fmt.Fprintf(stderr, "%v\n", wrapped)
 			return exitCodeForError(wrapped)
 		}
-	} else {
+	case *allEffects:
+		report.WriteAll(stdout, finding)
+	default:
 		report.Write(stdout, finding)
 	}
 
