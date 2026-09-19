@@ -71,6 +71,21 @@ func TestParseCommandRefusesWhatItCannotResolve(t *testing.T) {
 	}
 }
 
+// Duplicate namespace flags cannot be resolved: which value did the caller
+// intend? Refusing names both values so the caller can be specific.
+func TestParseCommandRefusesDuplicateNamespaceFlag(t *testing.T) {
+	_, err := ParseCommand("delete deployment api -n a -n b")
+	if err == nil {
+		t.Fatalf("ParseCommand with duplicate -n flags succeeded, want refusal")
+	}
+	if !errors.Is(err, ErrAmbiguous) {
+		t.Errorf("error %v does not wrap ErrAmbiguous", err)
+	}
+	if !strings.Contains(err.Error(), "a") || !strings.Contains(err.Error(), "b") {
+		t.Errorf("refusal must name both namespace values; got %q", err.Error())
+	}
+}
+
 func TestReadJSON(t *testing.T) {
 	in := `{"verb":"delete","target":{"resource":"namespaces","name":"prod-payments"}}`
 	a, err := ReadJSON(strings.NewReader(in))
@@ -92,5 +107,29 @@ func TestReadJSONAcceptsAnyVerb(t *testing.T) {
 	}
 	if a.Verb != "patch" {
 		t.Errorf("Verb = %q, want patch", a.Verb)
+	}
+}
+
+// An empty verb is not a verb no analyzer covers; it is the absence of one.
+// That is a parse-time fact: the JSON carried no meaningful action.
+func TestReadJSONRefusesEmptyVerb(t *testing.T) {
+	cases := []string{
+		`null`,
+		`{}`,
+		`{"target":{"resource":"services","name":"api"}}`,
+	}
+	for _, in := range cases {
+		t.Run(in, func(t *testing.T) {
+			_, err := ReadJSON(strings.NewReader(in))
+			if err == nil {
+				t.Fatalf("ReadJSON(%q) succeeded, want refusal", in)
+			}
+			if !errors.Is(err, ErrAmbiguous) {
+				t.Errorf("error %v does not wrap ErrAmbiguous", err)
+			}
+			if !strings.Contains(err.Error(), "verb") {
+				t.Errorf("refusal must name the missing verb; got %q", err.Error())
+			}
+		})
 	}
 }
