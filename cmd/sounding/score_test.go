@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -25,7 +28,10 @@ func TestClassifyAppliesTheVerbFloorEvenWhenEveryEffectIsComputed(t *testing.T) 
 		{Kind: "destroys", Basis: model.BasisComputed, Object: model.Target{Kind: "Pod", Name: "api-1"}, Explanation: "in the namespace"},
 	}
 
-	got := classify(act, effects, model.ClassRead)
+	got, err := classify(act, effects, model.ClassRead)
+	if err != nil {
+		t.Fatalf("classify returned an error: %v", err)
+	}
 	if got.Class == model.ClassRead {
 		t.Fatalf("class = %v, want at least the verb floor -- a namespace deletion must never classify as READ", got.Class)
 	}
@@ -38,9 +44,26 @@ func TestClassifyAppliesTheVerbFloorEvenWhenEveryEffectIsComputed(t *testing.T) 
 // verb floor is a MINIMUM the volume join can raise, never a ceiling.
 func TestClassifyLetsVolumeClassRaiseAboveTheVerbFloor(t *testing.T) {
 	act := model.Action{Verb: "delete", Target: model.Target{Resource: "namespaces", Name: "prod-payments"}}
-	got := classify(act, nil, model.ClassTerminal)
+	got, err := classify(act, nil, model.ClassTerminal)
+	if err != nil {
+		t.Fatalf("classify returned an error: %v", err)
+	}
 	if got.Class != model.ClassTerminal {
 		t.Errorf("class = %v, want ClassTerminal to survive over the ClassCompensable verb floor", got.Class)
+	}
+}
+
+// verbFloor requires an explicit case per verb rather than a constant every
+// caller reuses; a verb it does not recognise must refuse rather than
+// silently inherit "delete"'s floor.
+func TestClassifyRefusesAVerbWithNoFloorDefined(t *testing.T) {
+	act := model.Action{Verb: "scale", Target: model.Target{Resource: "deployments", Name: "api"}}
+	_, err := classify(act, nil, model.ClassRead)
+	if err == nil {
+		t.Fatal("want an error for a verb with no floor defined, got nil")
+	}
+	if !strings.Contains(err.Error(), "scale") {
+		t.Errorf("error must name the verb: %v", err)
 	}
 }
 
@@ -69,19 +92,67 @@ func TestTargetNamespaceRefusesAVerbWithNoAnalyser(t *testing.T) {
 // Namespace is cluster-scoped and therefore never appears in
 // ListableNamespaced's output; a resource that legitimately exists but
 // this build has no analyzer for must still be resolved against discovery
-// before being named in the refusal, rather than repeating whatever plural
-// action.ParseCommand guessed.
+// before being named in the refusal, rather than repeating whatever the
+// caller typed. The input here is deliberately the SINGULAR "pod", not the
+// plural "pods": asserting the refusal names "pods" only proves something
+// if the input could not already satisfy that assertion on its own --
+// with "pods" in and "pods" asserted, the test would pass even if
+// targetNamespace echoed the unresolved string straight back without
+// calling cluster.ResolveResource at all.
 func TestTargetNamespaceResolvesOtherResourcesBeforeRefusing(t *testing.T) {
 	rs := []cluster.Resource{
 		{GVR: schema.GroupVersionResource{Version: "v1", Resource: "pods"}, Kind: "Pod", Namespaced: true, SingularName: "pod"},
 	}
-	act := model.Action{Verb: "delete", Target: model.Target{Resource: "pods", Name: "api-1", Namespace: "prod"}}
+	act := model.Action{Verb: "delete", Target: model.Target{Resource: "pod", Name: "api-1", Namespace: "prod"}}
 	_, err := targetNamespace(act, rs)
 	if err == nil {
 		t.Fatal("want a refusal -- only delete namespace is supported, got nil")
 	}
 	if !strings.Contains(err.Error(), "pods") {
 		t.Errorf("refusal must name the resolved resource: %v", err)
+	}
+}
+
+// Encoding model.Finding directly would print Class as a bare int -- 3 for
+// TERMINAL, which happens to be COMPENSABLE's own exit code. This is the
+// contract test for --json: it must produce valid JSON, and the class must
+// read as its name, with the effects and their bases present so a
+// machine reader has the same evidence a human reading the plain report
+// does.
+func TestJSONOutputRendersTheClassAsItsNameNotACollidingNumber(t *testing.T) {
+	f := model.Finding{
+		Action: model.Action{Verb: "delete", Target: model.Target{Resource: "namespaces", Name: "prod-payments"}},
+		Effects: []model.Effect{
+			{Kind: "destroys", Basis: model.BasisComputed, Object: model.Target{Kind: "Pod", Name: "api-1"}, Explanation: "in the namespace"},
+			{Kind: "destroys-data", Basis: model.BasisComputed, Object: model.Target{Kind: "PersistentVolume", Name: "pv-1"}, Explanation: "reclaimPolicy=Delete"},
+		},
+		Class: model.ClassTerminal, Scanned: time.Unix(0, 0).UTC(), APICalls: 61,
+	}
+
+	var b bytes.Buffer
+	if err := writeJSON(&b, f); err != nil {
+		t.Fatalf("writeJSON errored: %v", err)
+	}
+
+	var decoded struct {
+		Class   string `json:"class"`
+		Effects []struct {
+			Basis string `json:"Basis"`
+		} `json:"effects"`
+	}
+	if err := json.Unmarshal(b.Bytes(), &decoded); err != nil {
+		t.Fatalf("--json output does not parse as JSON: %v\n%s", err, b.String())
+	}
+	if decoded.Class != "TERMINAL" {
+		t.Errorf("class = %q, want \"TERMINAL\" (a bare 3 collides with COMPENSABLE's exit code)", decoded.Class)
+	}
+	if len(decoded.Effects) != 2 {
+		t.Fatalf("got %d effects in the json output, want 2", len(decoded.Effects))
+	}
+	for _, e := range decoded.Effects {
+		if e.Basis != "computed" {
+			t.Errorf("effect basis = %q, want \"computed\"", e.Basis)
+		}
 	}
 }
 

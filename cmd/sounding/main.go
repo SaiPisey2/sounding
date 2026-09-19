@@ -56,10 +56,18 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
+const usage = "usage: sounding score '<command>' [--snapshot DIR] [--kubeconfig PATH] [--json]\n" +
+	"       sounding score --stdin [--snapshot DIR] [--kubeconfig PATH] [--json]"
+
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] != "score" {
-		fmt.Fprintln(stderr, "usage: sounding score '<command>' [--snapshot DIR] [--kubeconfig PATH] [--json]")
-		fmt.Fprintln(stderr, "       sounding score --stdin [--snapshot DIR] [--kubeconfig PATH] [--json]")
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "refused: no subcommand given")
+		fmt.Fprintln(stderr, usage)
+		return exitCodeForError(errRefused)
+	}
+	if args[0] != "score" {
+		fmt.Fprintf(stderr, "refused: unknown subcommand %q\n", args[0])
+		fmt.Fprintln(stderr, usage)
 		return exitCodeForError(errRefused)
 	}
 
@@ -114,9 +122,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	if *jsonOut {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(finding); err != nil {
+		if err := writeJSON(stdout, finding); err != nil {
 			wrapped := fmt.Errorf("%w: encoding finding as json: %v", errOperational, err)
 			fmt.Fprintf(stderr, "%v\n", wrapped)
 			return exitCodeForError(wrapped)
@@ -144,6 +150,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // command, one with --snapshot and one without, printed two different
 // verdicts.
 func score(ctx context.Context, act model.Action, kubeconfig, snapshotDir string) (model.Finding, error) {
+	// Captured before any request is made, not after enumeration finishes.
+	// The report's whole point in stating this is letting the caller judge
+	// drift between what was observed and when they act on it; stamping it
+	// after the scan's slowest, most-request-heavy phase already ran would
+	// under-report exactly the window that matters most on a large cluster.
+	scanned := time.Now().UTC()
+
 	c, err := cluster.New(kubeconfig)
 	if err != nil {
 		return model.Finding{}, fmt.Errorf("%w: building cluster clients: %v", errOperational, err)
@@ -191,8 +204,18 @@ func score(ctx context.Context, act model.Action, kubeconfig, snapshotDir string
 	}
 	effects = append(effects, volEffects...)
 
-	finding := classify(act, effects, volClass)
-	finding.Scanned = time.Now().UTC()
+	finding, err := classify(act, effects, volClass)
+	if err != nil {
+		// targetNamespace already refuses every verb but "delete" before
+		// this point is ever reached, so this is not a real user-facing
+		// case today -- it is verbFloor's own defence against a second
+		// verb being wired into targetNamespace without anyone adding a
+		// matching case here, which would otherwise silently inherit
+		// "delete namespace"'s floor for a verb that has never been
+		// analysed.
+		return model.Finding{}, fmt.Errorf("%w: %v", errOperational, err)
+	}
+	finding.Scanned = scanned
 	finding.APICalls = int(*c.Calls)
 
 	if snapshotDir != "" {
@@ -218,32 +241,46 @@ func score(ctx context.Context, act model.Action, kubeconfig, snapshotDir string
 // otherwise have no way to catch a regression here: dropping verbFloor()
 // in favour of model.ClassRead compiles cleanly and only shows up as every
 // namespace deletion reporting the single most permissive class there is.
-func classify(act model.Action, effects []model.Effect, volClass model.Class) model.Finding {
-	floor := verbFloor()
+func classify(act model.Action, effects []model.Effect, volClass model.Class) (model.Finding, error) {
+	floor, err := verbFloor(act.Verb)
+	if err != nil {
+		return model.Finding{}, err
+	}
 	if volClass > floor {
 		floor = volClass
 	}
-	return model.NewFinding(act, effects, floor)
+	return model.NewFinding(act, effects, floor), nil
 }
 
-// verbFloor is the worst class this build will ever report for "delete
-// namespace", regardless of what Classify's basis rules alone would allow.
-// Classify only ever raises a finding to the floor each EFFECT's basis
-// imposes -- it has no notion of what the verb being scored actually does.
-// Every effect this analyzer produces from enumeration carries
-// BasisComputed, whose own floor is ClassRead, the most permissive class
-// there is, so without a verb floor supplied from outside model.Classify,
-// deleting a namespace full of genuinely measured, destructive effects
-// would print as safe to read. That is not merely a wrong answer -- it is
-// the exact failure this project exists to prevent, one level up: an
-// unexamined default standing in for a judgement, and printing with the
-// full credibility of a measurement. The objects a namespace deletion
-// destroys ARE restorable from a snapshot even when the data behind some of
-// them is not, which is why this floor is ClassCompensable and not
-// ClassTerminal -- volume.Join is what raises the floor further, per
-// object, when data specifically cannot come back.
-func verbFloor() model.Class {
-	return model.ClassCompensable
+// verbFloor is the worst class this build will ever report for verb,
+// regardless of what Classify's basis rules alone would allow. Classify
+// only ever raises a finding to the floor each EFFECT's basis imposes --
+// it has no notion of what the verb being scored actually does. Every
+// effect this analyzer produces from enumeration carries BasisComputed,
+// whose own floor is ClassRead, the most permissive class there is, so
+// without a verb floor supplied from outside model.Classify, deleting a
+// namespace full of genuinely measured, destructive effects would print as
+// safe to read. That is not merely a wrong answer -- it is the exact
+// failure this project exists to prevent, one level up: an unexamined
+// default standing in for a judgement, and printing with the full
+// credibility of a measurement.
+//
+// This takes verb and requires an explicit case per one, rather than being
+// a single constant every caller reuses, on purpose: a second verb reaching
+// this function without a case of its own is refused instead of silently
+// inheriting "delete"'s floor for behaviour nobody has actually analysed.
+func verbFloor(verb string) (model.Class, error) {
+	switch verb {
+	case "delete":
+		// The objects a namespace deletion destroys ARE restorable from a
+		// snapshot even when the data behind some of them is not, which is
+		// why this is ClassCompensable and not ClassTerminal -- volume.Join
+		// is what raises the floor further, per object, when data
+		// specifically cannot come back.
+		return model.ClassCompensable, nil
+	default:
+		return 0, fmt.Errorf("verb %q has no floor defined", verb)
+	}
 }
 
 // targetNamespace decides which namespace act would tear down, or refuses.
@@ -256,13 +293,13 @@ func verbFloor() model.Class {
 // cluster-scoped kind, ListableNamespaced only ever reports namespaced
 // ones, and no amount of resolving against that list will ever produce it.
 // So it is recognised directly, by name, rather than through
-// cluster.ResolveResource. Every OTHER resource string -- the ones
-// action.ParseCommand's naive pluralisation ("ingress" -> "ingresss") can
-// get wrong -- is resolved against live discovery before it is used for
+// cluster.ResolveResource. Every OTHER resource string -- typed exactly as
+// the caller wrote it, since action.ParseCommand no longer guesses a
+// plural -- is resolved against live discovery before it is used for
 // anything, including before it is named in a refusal, so a caller is
 // refused with the resource's real name and, when the string is
-// genuinely ambiguous, the real candidates -- never a guessed plural that
-// happens to match nothing.
+// genuinely ambiguous, the real candidates -- never a plural nobody typed
+// that happens to match nothing.
 func targetNamespace(act model.Action, resources []cluster.Resource) (string, error) {
 	if act.Verb != "delete" {
 		return "", fmt.Errorf("verb %q has no analyzer", act.Verb)
@@ -287,6 +324,34 @@ func isNamespaceResource(s string) bool {
 		return true
 	}
 	return false
+}
+
+// jsonFinding mirrors model.Finding for --json output, with one deliberate
+// difference: Class is rendered as its name, not encoded as-is. model.Class
+// is an int underneath, and encoding it directly would print e.g. 3 for a
+// TERMINAL finding -- which is COMPENSABLE's own exit code. A number that
+// silently means a different class depending on which line of the report
+// you compare it to is worse than an unsupported flag would have been.
+type jsonFinding struct {
+	Action   model.Action    `json:"action"`
+	Effects  []model.Effect  `json:"effects"`
+	Class    string          `json:"class"`
+	Undo     *model.UndoPlan `json:"undo,omitempty"`
+	Scanned  time.Time       `json:"scanned"`
+	APICalls int             `json:"apiCalls"`
+}
+
+func writeJSON(w io.Writer, f model.Finding) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(jsonFinding{
+		Action:   f.Action,
+		Effects:  f.Effects,
+		Class:    f.Class.String(),
+		Undo:     f.Undo,
+		Scanned:  f.Scanned,
+		APICalls: f.APICalls,
+	})
 }
 
 // excludedFromEffects lists, in the words the undo bundle's NOT-RESTORED.txt
