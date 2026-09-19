@@ -255,3 +255,36 @@ func TestNamespaceMustExistPassesWhenTheNamespaceIsPresent(t *testing.T) {
 		t.Errorf("want no error for a namespace that exists, got %v", err)
 	}
 }
+
+// excludedFromEffects feeds NOT-RESTORED.txt, and the bundle's header
+// arithmetic depends on it naming every effect whose OBJECT the bundle does
+// not capture -- not just the effects whose DATA is destroyed. Before this
+// fix, detaches-data (a Retain PersistentVolume) fell through this
+// function entirely: its object is cluster-scoped and was never fetched
+// into the bundle either, but nothing said so. A report with one "destroys"
+// effect, one "destroys-data" effect and one "detaches-data" effect must
+// list 2 exclusions, not 1, so that captured (1) + excluded (2) reconciles
+// against the header's total of 3.
+func TestExcludedFromEffectsNamesTheRetainVolumeToo(t *testing.T) {
+	effects := []model.Effect{
+		{Kind: "destroys", Object: model.Target{Kind: "Pod", Name: "web-1"}, Explanation: "in the namespace"},
+		{Kind: "destroys-data", Object: model.Target{Kind: "PersistentVolume", Name: "pv-delete"}, Explanation: "reclaimPolicy=Delete"},
+		{Kind: "detaches-data", Object: model.Target{Kind: "PersistentVolume", Name: "pv-retain"}, Explanation: "reclaimPolicy=Retain"},
+	}
+
+	excluded := excludedFromEffects(effects)
+	if len(excluded) != 2 {
+		t.Fatalf("excludedFromEffects returned %d entries, want 2 (destroys-data + detaches-data):\n%v", len(excluded), excluded)
+	}
+
+	joined := strings.Join(excluded, "\n")
+	if !strings.Contains(joined, "pv-delete") {
+		t.Errorf("must name the destroyed volume: %v", excluded)
+	}
+	if !strings.Contains(joined, "pv-retain") {
+		t.Errorf("must name the retained-but-uncaptured volume: %v", excluded)
+	}
+	if !strings.Contains(joined, "claimRef") {
+		t.Errorf("the retained-volume entry must explain the claimRef needs clearing before the restored pvc can rebind: %v", excluded)
+	}
+}

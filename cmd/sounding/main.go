@@ -419,15 +419,36 @@ func destroyEffectsFromObjects(objs []cascade.Object) []model.Effect {
 }
 
 // excludedFromEffects lists, in the words the undo bundle's NOT-RESTORED.txt
-// wants, every effect whose data will not come back from the bundle --
-// destroyed outright, or simply never understood. An effect this tool
-// merely detached (Retain) is not excluded: the data survives, just not
-// under this bundle's control.
+// wants, every effect whose OBJECT is not captured in the bundle -- which is
+// not the same set as "data destroyed". destroys-data and unknown-data-fate
+// belong here because the data itself is gone or its fate was never
+// understood. detaches-data belongs here too, for a narrower but easy to
+// miss reason: its Object is the PersistentVolume, which is cluster-scoped
+// and therefore never appears in the namespace's objs list snapshot.Write
+// fetches from -- the PV is simply never one of the files this bundle
+// writes, Retain or not. Leaving it off this list understated the bundle by
+// exactly the count of Retain volumes it examined: one report showed
+// "objects 26", "undo 24 captured", "1 not restorable" -- 26-24=2, but only
+// one name in NOT-RESTORED.txt, because the Retain volume was excluded from
+// the count without being excluded from the file. Including it here is what
+// makes captured + excluded reconcile against the header's total.
+//
+// Practically, this is not just a bookkeeping gap: after a Retain volume's
+// namespace is deleted, the PV moves to Released holding the old claimRef.
+// restore.sh re-creates the PVC from this bundle, but nothing in the bundle
+// clears that claimRef, so the restored PVC stays Pending forever unless a
+// human does that by hand first -- which is exactly what NOT-RESTORED.txt
+// exists to warn about before a reader is surprised by it.
 func excludedFromEffects(effects []model.Effect) []string {
 	var out []string
 	for _, e := range effects {
-		if e.Kind == "destroys-data" || e.Kind == "unknown-data-fate" {
+		switch e.Kind {
+		case "destroys-data", "unknown-data-fate":
 			out = append(out, fmt.Sprintf("%s/%s: %s", e.Object.Kind, e.Object.Name, e.Explanation))
+		case "detaches-data":
+			out = append(out, fmt.Sprintf(
+				"%s/%s: the data survives (%s), but the PersistentVolume object itself is not captured in this bundle -- it is cluster-scoped, outside the deleted namespace -- and its claimRef must be cleared before the restored PersistentVolumeClaim can rebind to it",
+				e.Object.Kind, e.Object.Name, e.Explanation))
 		}
 	}
 	return out
