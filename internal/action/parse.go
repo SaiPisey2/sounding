@@ -137,17 +137,34 @@ func ParseCommand(s string) (model.Action, error) {
 	}, nil
 }
 
+// maxActionBody bounds how much of stdin ReadJSON will read: enough for any
+// real Action, small enough that a caller who pipes in the wrong file (or
+// an unbounded stream) fails fast rather than after reading it all.
+const maxActionBody = 1024 * 1024 // 1 MiB
+
 // ReadJSON parses a delete action from JSON. It accepts any verb; refusal of
 // unsupported verbs belongs to the analyzer, not the parser, so the report can
 // name which verb was not handled rather than saying "could not parse".
 // It rejects a JSON body with no verb, since that represents the absence of
 // an action, not an action with an unanalyzed verb.
 func ReadJSON(r io.Reader) (model.Action, error) {
-	// Limit the JSON body to prevent unbounded reads. 1 MiB is ample for an Action.
-	limitedReader := io.LimitReader(r, 1024*1024)
+	// Read one byte past the cap: exactly maxActionBody bytes back means the
+	// body might be larger still (this read simply stopped at the limit),
+	// while maxActionBody+1 read in full proves it actually is. Decoding
+	// straight off a LimitReader instead would just hand json.Decode a
+	// truncated document, which fails as "unexpected EOF" -- a real error,
+	// but one that names the wrong cause: the caller sent too much, not
+	// something that failed to parse.
+	body, err := io.ReadAll(io.LimitReader(r, maxActionBody+1))
+	if err != nil {
+		return model.Action{}, fmt.Errorf("%w: reading JSON body: %v", ErrAmbiguous, err)
+	}
+	if len(body) > maxActionBody {
+		return model.Action{}, fmt.Errorf("%w: JSON body exceeds the %d byte (1 MiB) limit", ErrAmbiguous, maxActionBody)
+	}
 
 	var a model.Action
-	if err := json.NewDecoder(limitedReader).Decode(&a); err != nil {
+	if err := json.Unmarshal(body, &a); err != nil {
 		return model.Action{}, fmt.Errorf("%w: invalid JSON: %v", ErrAmbiguous, err)
 	}
 

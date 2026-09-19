@@ -141,3 +141,45 @@ func TestReadJSONRefusesEmptyVerb(t *testing.T) {
 		})
 	}
 }
+
+// An oversized body used to fail as "invalid JSON: unexpected EOF" -- a
+// real error, but one that names the wrong cause: json.Decode had simply
+// been handed a body truncated at the limit by io.LimitReader, and nothing
+// told the caller they had sent too much rather than sent something
+// malformed.
+func TestReadJSONNamesTheSizeLimitRatherThanFailingAsTruncatedJSON(t *testing.T) {
+	huge := `{"verb":"delete","target":{"resource":"namespaces","name":"` +
+		strings.Repeat("x", 2*1024*1024) + `"}}`
+	_, err := ReadJSON(strings.NewReader(huge))
+	if err == nil {
+		t.Fatal("want a refusal for an oversized body, got nil")
+	}
+	if !errors.Is(err, ErrAmbiguous) {
+		t.Errorf("error %v does not wrap ErrAmbiguous", err)
+	}
+	if strings.Contains(err.Error(), "unexpected EOF") {
+		t.Errorf("refusal must name the size limit, not report truncated JSON: %v", err)
+	}
+	if !strings.Contains(err.Error(), "1 MiB") {
+		t.Errorf("refusal must name the 1 MiB limit: %v", err)
+	}
+}
+
+// A body sitting exactly at the limit must still parse -- the cap must not
+// reject one byte less than it actually allows.
+func TestReadJSONAcceptsABodyExactlyAtTheLimit(t *testing.T) {
+	const prefix = `{"verb":"delete","target":{"resource":"namespaces","name":"`
+	const suffix = `"}}`
+	body := prefix + strings.Repeat("x", maxActionBody-len(prefix)-len(suffix)) + suffix
+	if len(body) != maxActionBody {
+		t.Fatalf("test construction error: body is %d bytes, want exactly %d", len(body), maxActionBody)
+	}
+
+	a, err := ReadJSON(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("ReadJSON errored on a body exactly at the limit: %v", err)
+	}
+	if a.Verb != "delete" {
+		t.Errorf("Verb = %q, want delete", a.Verb)
+	}
+}
