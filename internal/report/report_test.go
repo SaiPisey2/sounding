@@ -155,9 +155,11 @@ func TestCappedListingNeverHidesADestroysDataEffect(t *testing.T) {
 	if !strings.Contains(s, "PersistentVolume/pv-buried") {
 		t.Errorf("a destroys-data effect past the cap must still be shown:\n%s", s)
 	}
-	// 20 capped + 1 forced destroys-data = 21 shown, so 4 remain hidden.
+	// The forced destroys-data effect is ADDITIONAL to the 20-effect cap,
+	// not a substitute for one of its slots: 20 ordinary + 1 forced = 21
+	// shown, so 4 of the 25 total remain hidden.
 	if !strings.Contains(s, "... and 4 more (use --all to list every effect)") {
-		t.Errorf("the forced destroys-data effect must count against the cap so the remainder stays exact:\n%s", s)
+		t.Errorf("a forced destroys-data effect must be additional to the cap, and the remainder must reflect that exactly:\n%s", s)
 	}
 }
 
@@ -183,9 +185,11 @@ func TestCappedListingNeverHidesAnUnknownDataFateEffect(t *testing.T) {
 	if !strings.Contains(s, "PersistentVolumeClaim/pvc-buried") {
 		t.Errorf("an unknown-data-fate effect past the cap must still be shown:\n%s", s)
 	}
-	// 20 capped + 1 forced unknown-data-fate = 21 shown, so 4 remain hidden.
+	// The forced unknown-data-fate effect is ADDITIONAL to the 20-effect
+	// cap, not a substitute for one of its slots: 20 ordinary + 1 forced =
+	// 21 shown, so 4 of the 25 total remain hidden.
 	if !strings.Contains(s, "... and 4 more (use --all to list every effect)") {
-		t.Errorf("the forced unknown-data-fate effect must count against the cap so the remainder stays exact:\n%s", s)
+		t.Errorf("a forced unknown-data-fate effect must be additional to the cap, and the remainder must reflect that exactly:\n%s", s)
 	}
 }
 
@@ -210,6 +214,43 @@ func TestCappedListingStillHidesADetachesDataEffectPastTheCap(t *testing.T) {
 	}
 	if !strings.Contains(s, "... and 5 more (use --all to list every effect)") {
 		t.Errorf("the ordinary cap must still apply to detaches-data:\n%s", s)
+	}
+}
+
+// A forced (alwaysShown) effect is additive to the cap wherever it sits in
+// the list, not only when it falls past the first cap positions. The two
+// tests above only ever place their forced effect at index 24, well past
+// the cap of 20, so they cannot tell "additive everywhere" apart from "only
+// additive when past the cap" -- exactly the distinction an earlier,
+// purely positional implementation got wrong for a forced effect that fell
+// INSIDE the first cap positions (it changed nothing there, since that
+// effect was already going to be shown either way). This places the forced
+// effect at index 5 and asserts the identical arithmetic as the past-the-
+// cap fixtures: 20 ordinary + 1 forced = 21 shown, 4 hidden.
+func TestForcedEffectIsAdditiveWhereverItSitsInTheList(t *testing.T) {
+	for _, kind := range []string{"destroys-data", "unknown-data-fate"} {
+		t.Run(kind, func(t *testing.T) {
+			f := finding()
+			var effects []model.Effect
+			effects = append(effects, manyEffects(5)...)
+			effects = append(effects, model.Effect{
+				Kind: kind, Basis: model.BasisComputed,
+				Object:      model.Target{Kind: "PersistentVolume", Name: "pv-inside-the-cap"},
+				Explanation: "forced",
+			})
+			effects = append(effects, manyEffects(19)...)
+			f.Effects = effects // 25 total: 5 ordinary + 1 forced (index 5, well inside cap 20) + 19 ordinary
+
+			var b bytes.Buffer
+			Write(&b, f)
+			s := b.String()
+			if !strings.Contains(s, "PersistentVolume/pv-inside-the-cap") {
+				t.Errorf("a forced %s effect inside the cap must still be shown:\n%s", kind, s)
+			}
+			if !strings.Contains(s, "... and 4 more (use --all to list every effect)") {
+				t.Errorf("a forced %s effect inside the cap must be additive, exactly like one past the cap:\n%s", kind, s)
+			}
+		})
 	}
 }
 

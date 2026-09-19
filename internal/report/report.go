@@ -95,6 +95,15 @@ func write(w io.Writer, f model.Finding, cap int) {
 	}
 }
 
+// alwaysShown and deprioritizedKinds below are keyed on two DIFFERENT
+// fields that both happen to be called Kind, two lines apart -- easy to
+// swap by accident and get something that still compiles. alwaysShown
+// tests e.Kind, the model.Effect's own kind (what HAPPENED: "destroys",
+// "destroys-data", ...). deprioritizedKinds tests e.Object.Kind, the
+// Kubernetes kind of the thing the effect is ABOUT ("Pod", "Event", ...).
+// Neither is more "correct" than the other in isolation; each is right
+// for what it answers, and only the field name distinguishes them.
+//
 // alwaysShown holds the effect kinds a cap must never hide, regardless of
 // their position in the list:
 //
@@ -176,7 +185,20 @@ func writeEffects(w io.Writer, effects []model.Effect, cap int) {
 //
 //  1. alwaysShown effects (destroys-data, unknown-data-fate) are chosen
 //     unconditionally, exactly as in the previous two fix rounds, and do
-//     not draw against the ordinary budget below.
+//     NOT draw against the ordinary budget below -- each one is ADDITIVE
+//     to cap, not a substitute for one of its slots, regardless of where
+//     in the list it sits. A cap of 20 with one forced effect anywhere in
+//     the list shows 21, not 20; the total shown is only ever bounded by
+//     cap when no forced effect is present. This is a deliberate choice,
+//     not an oversight: a cap that could shrink to make room for a forced
+//     effect would sometimes hide an ORDINARY object to make space for a
+//     data-fate one, which is a worse trade than the listing simply
+//     running one line longer. (An earlier, purely positional
+//     implementation made this same choice by accident, but only for a
+//     forced effect that fell past the first cap positions; one inside
+//     them changed nothing, because it was already going to be shown
+//     either way. This implementation makes the choice uniform regardless
+//     of position, which is why the tests below cover both cases.)
 //  2. Ordinary effects -- anything not in tier 1 or 3 -- claim the
 //     ordinary budget (cap slots) first, in their original order.
 //  3. Deprioritized effects (Event) only receive whatever budget tier 2
