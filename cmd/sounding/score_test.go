@@ -256,20 +256,20 @@ func TestNamespaceMustExistPassesWhenTheNamespaceIsPresent(t *testing.T) {
 	}
 }
 
-// excludedFromEffects feeds NOT-RESTORED.txt, and the bundle's header
-// arithmetic depends on it naming every effect whose OBJECT the bundle does
-// not capture -- not just the effects whose DATA is destroyed. Before this
-// fix, detaches-data (a Retain PersistentVolume) fell through this
-// function entirely: its object is cluster-scoped and was never fetched
-// into the bundle either, but nothing said so. A report with one "destroys"
-// effect, one "destroys-data" effect and one "detaches-data" effect must
-// list 2 exclusions, not 1, so that captured (1) + excluded (2) reconciles
-// against the header's total of 3.
+// excludedFromEffects feeds NOT-RESTORED.txt, and must name every effect
+// whose OBJECT is genuinely absent from the bundle -- not just the effects
+// whose DATA is destroyed. Before this fix, detaches-data (a Retain
+// PersistentVolume) fell through this function entirely: its object is
+// cluster-scoped and was never fetched into the bundle either, but nothing
+// said so. A report with one "destroys" effect, one "destroys-data" effect
+// and one "detaches-data" effect -- both PV-shaped effects carrying
+// Resource: "persistentvolumes", exactly as classifyPV builds them -- must
+// list 2 exclusions, not 1.
 func TestExcludedFromEffectsNamesTheRetainVolumeToo(t *testing.T) {
 	effects := []model.Effect{
 		{Kind: "destroys", Object: model.Target{Kind: "Pod", Name: "web-1"}, Explanation: "in the namespace"},
-		{Kind: "destroys-data", Object: model.Target{Kind: "PersistentVolume", Name: "pv-delete"}, Explanation: "reclaimPolicy=Delete"},
-		{Kind: "detaches-data", Object: model.Target{Kind: "PersistentVolume", Name: "pv-retain"}, Explanation: "reclaimPolicy=Retain"},
+		{Kind: "destroys-data", Object: model.Target{Resource: "persistentvolumes", Kind: "PersistentVolume", Name: "pv-delete"}, Explanation: "reclaimPolicy=Delete"},
+		{Kind: "detaches-data", Object: model.Target{Resource: "persistentvolumes", Kind: "PersistentVolume", Name: "pv-retain"}, Explanation: "reclaimPolicy=Retain"},
 	}
 
 	excluded := excludedFromEffects(effects)
@@ -286,6 +286,28 @@ func TestExcludedFromEffectsNamesTheRetainVolumeToo(t *testing.T) {
 	}
 	if !strings.Contains(joined, "claimRef") {
 		t.Errorf("the retained-volume entry must explain the claimRef needs clearing before the restored pvc can rebind: %v", excluded)
+	}
+}
+
+// An unbound PVC's unknown-data-fate effect (internal/volume/join.go's
+// classifyUnbound) names the CLAIM itself, not a volume -- there is no PV
+// to name. The claim is namespaced, so cascade.Enumerate already walked it
+// into objs and snapshot.Write already wrote its manifest to the bundle
+// exactly like every other object in the namespace. Before this fix,
+// excludedFromEffects put it in NOT-RESTORED.txt anyway, wholesale, because
+// it matched on effect Kind alone -- so the file claimed an object was not
+// captured when a JSON manifest for it sat in the very same directory and
+// restore.sh applied it. An operator following the file's own instructions
+// would have hand-recreated a PVC the bundle already restores.
+func TestExcludedFromEffectsDoesNotClaimAnAlreadyCapturedPVCIsMissing(t *testing.T) {
+	effects := []model.Effect{
+		{Kind: "destroys", Object: model.Target{Resource: "persistentvolumeclaims", Kind: "PersistentVolumeClaim", Name: "orphan"}, Explanation: "in the namespace"},
+		{Kind: "unknown-data-fate", Object: model.Target{Resource: "persistentvolumeclaims", Kind: "PersistentVolumeClaim", Name: "orphan"}, Explanation: "pvc/orphan has no spec.volumeName, so nothing is known about what backs it"},
+	}
+
+	excluded := excludedFromEffects(effects)
+	if len(excluded) != 0 {
+		t.Fatalf("excludedFromEffects returned %v, want none -- the claim's own manifest is already in the bundle", excluded)
 	}
 }
 

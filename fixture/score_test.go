@@ -3,7 +3,9 @@
 package fixture
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -83,6 +85,67 @@ func TestOwnerChainIsReportedOwnerFirst(t *testing.T) {
 	p := strings.Index(out, "Pod/")
 	if !(d >= 0 && r > d && p > r) {
 		t.Errorf("want Deployment before ReplicaSet before Pod:\n%s", out)
+	}
+}
+
+// NOT-RESTORED.txt's entire purpose is naming what a restore will not bring
+// back. Before this fix, an unbound PVC's unknown-data-fate effect -- which
+// names the claim itself, not a volume, since an unbound claim has no PV to
+// name -- was listed there wholesale, even though sounding-demo's own
+// "orphan" claim is a namespaced object cascade.Enumerate already walked
+// and snapshot.Write already wrote to the bundle. The file said an object
+// was not captured while its manifest sat in the very same directory and
+// restore.sh applied it. This pins the header's claim structurally, against
+// a real bundle, rather than re-deriving a count: for every object
+// NOT-RESTORED.txt names, no manifest file in the bundle may be the one
+// that would restore it.
+func TestNotRestoredNamesNothingTheBundleActuallyCaptured(t *testing.T) {
+	dir := t.TempDir()
+	if _, code := score(t, "delete ns sounding-demo", "--snapshot", dir); code != 4 {
+		t.Fatalf("score exited %d, want 4 (TERMINAL)", code)
+	}
+
+	notRestored, err := os.ReadFile(filepath.Join(dir, "NOT-RESTORED.txt"))
+	if err != nil {
+		t.Fatalf("reading NOT-RESTORED.txt: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading bundle dir: %v", err)
+	}
+	var manifests []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") {
+			manifests = append(manifests, e.Name())
+		}
+	}
+	if len(manifests) == 0 {
+		t.Fatal("bundle wrote no manifests at all -- fixture is broken")
+	}
+
+	checked := 0
+	for _, line := range strings.Split(string(notRestored), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "- ") {
+			continue
+		}
+		entry := strings.TrimPrefix(line, "- ")
+		slash := strings.Index(entry, "/")
+		colon := strings.Index(entry, ":")
+		if slash < 0 || colon < 0 || colon < slash {
+			t.Fatalf("NOT-RESTORED.txt entry does not match \"Kind/Name: ...\": %q", line)
+		}
+		name := entry[slash+1 : colon]
+		checked++
+		for _, m := range manifests {
+			if strings.HasSuffix(m, "-"+name+".json") {
+				t.Errorf("NOT-RESTORED.txt names %q as not restored, but %q is in the same bundle -- it IS captured:\n%s", name, m, notRestored)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("parsed zero NOT-RESTORED.txt entries -- sounding-demo seeds a Delete-policy and a Retain-policy volume, which should produce at least one each time")
 	}
 }
 

@@ -491,29 +491,65 @@ func destroyEffectsFromObjects(objs []cascade.Object) []model.Effect {
 }
 
 // excludedFromEffects lists, in the words the undo bundle's NOT-RESTORED.txt
-// wants, every effect whose OBJECT is not captured in the bundle -- which is
-// not the same set as "data destroyed". destroys-data and unknown-data-fate
-// belong here because the data itself is gone or its fate was never
-// understood. detaches-data belongs here too, for a narrower but easy to
-// miss reason: its Object is the PersistentVolume, which is cluster-scoped
-// and therefore never appears in the namespace's objs list snapshot.Write
-// fetches from -- the PV is simply never one of the files this bundle
-// writes, Retain or not. Leaving it off this list understated the bundle by
-// exactly the count of Retain volumes it examined: one report showed
-// "objects 26", "undo 24 captured", "1 not restorable" -- 26-24=2, but only
-// one name in NOT-RESTORED.txt, because the Retain volume was excluded from
-// the count without being excluded from the file. Including it here is what
-// makes captured + excluded reconcile against the header's total.
+// wants, every effect whose OBJECT is genuinely absent from the bundle --
+// not every effect volume.Join produced about uncertain data. destroys-data
+// and detaches-data always name the bound PersistentVolume (see
+// internal/volume/join.go's classifyPV), which is cluster-scoped and
+// therefore never one of the objects cascade.Enumerate walks or
+// snapshot.Write captures -- genuinely absent either way, whether the
+// reclaim policy destroys the data (destroys-data) or merely strands it
+// (detaches-data, whose claimRef still needs clearing by hand before the
+// restored PVC can rebind).
 //
-// Practically, this is not just a bookkeeping gap: after a Retain volume's
-// namespace is deleted, the PV moves to Released holding the old claimRef.
-// restore.sh re-creates the PVC from this bundle, but nothing in the bundle
-// clears that claimRef, so the restored PVC stays Pending forever unless a
-// human does that by hand first -- which is exactly what NOT-RESTORED.txt
-// exists to warn about before a reader is surprised by it.
+// unknown-data-fate is NOT always about an absent object, and that used to
+// be missed: classifyPV emits it for a bound PV with an unrecognised
+// reclaim policy (Object = the PV, absent, same as the two cases above),
+// but classifyUnbound emits the identical Kind for a PVC with no
+// spec.volumeName -- and THAT effect's Object is the claim itself, a
+// namespaced object cascade.Enumerate already walked and snapshot.Write
+// already wrote to the bundle like any other object in the namespace.
+// Treating every unknown-data-fate effect the same regardless of which
+// function produced it put an unbound PVC's name in NOT-RESTORED.txt while
+// persistentvolumeclaims-<name>.json sat in the same directory and
+// restore.sh applied it -- the one file whose entire job is saying what a
+// restore will not bring back, wrong about the one line an operator would
+// act on by hand-recreating an object the bundle already restores.
+//
+// The check below is Resource, not Kind or effect Kind: a PersistentVolume
+// is cluster-scoped and by construction never appears in objs; a
+// PersistentVolumeClaim is namespaced and, by the same construction,
+// always does -- it is exactly what triggered volume.Join to look at it in
+// the first place. That is a structural fact about the two kinds, not an
+// artifact of which effect Kind happens to name them, so this does not need
+// to change if a future analyzer starts producing unknown-data-fate (or any
+// other Kind) for some third resource: it excludes precisely the effects
+// naming an object the bundle could not have captured, and no others.
+//
+// One consequence: objects (the report header's total) no longer always
+// equals captured + len(excluded). An unbound PVC's unknown-data-fate
+// effect still counts toward the header's total (it is a real effect
+// volume.Join found) and its object still counts toward captured (the file
+// is really there), but it no longer counts here -- so the true
+// relationship is objects = captured + excluded + uncertain, where
+// uncertain is the number of effects whose object IS captured but whose
+// data fate could not be determined. uncertain is not surfaced as its own
+// field (the frozen --json "undo" shape in README.md is untouched by this
+// fix), but every uncertain effect stays fully visible in the plain-text
+// report regardless of the cap, because unknown-data-fate is one of the two
+// kinds a cap can never hide (internal/report/report.go's alwaysShown).
 func excludedFromEffects(effects []model.Effect) []string {
 	var out []string
 	for _, e := range effects {
+		// A PersistentVolume is cluster-scoped: an effect naming one is
+		// genuinely absent from this namespace's bundle no matter which
+		// Kind produced it. A PersistentVolumeClaim is namespaced and
+		// already captured -- volume.Join only ever looks at a claim
+		// because cascade.Enumerate already walked it into objs, and
+		// snapshot.Write writes every object in objs regardless of what
+		// volume.Join later concludes about it.
+		if e.Object.Resource != "persistentvolumes" {
+			continue
+		}
 		switch e.Kind {
 		case "destroys-data", "unknown-data-fate":
 			out = append(out, fmt.Sprintf("%s/%s: %s", e.Object.Kind, e.Object.Name, e.Explanation))
