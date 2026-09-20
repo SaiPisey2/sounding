@@ -1,0 +1,93 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege by default: nothing here needs to write to the
+# repository, and a workflow that cannot write cannot be turned into one
+# that pushes. Actions are pinned to commit SHAs rather than tags -- a tag
+# is mutable, so `@v4` is a promise the action's owner can silently change
+# under this repository at any time.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+      - name: gofmt check
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "$out"
+            echo "gofmt found unformatted files" >&2
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go test ./... -race
+      - run: CGO_ENABLED=0 go build ./cmd/sounding
+
+  provenance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check commit trailers
+        run: |
+          if git log --format='%H %B' | grep -iE 'co-authored-by:|generated with|🤖|noreply@'; then
+            echo "commit history contains an attribution trailer" >&2
+            exit 1
+          fi
+          echo "history clean"
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  fixture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+      # Installed as a plain binary, pinned to the version this fixture was
+      # verified against, rather than through `go install` -- a Go-tooling
+      # install of a package outside this module can still touch this
+      # module's go.mod/go.sum, and neither may change here.
+      - name: Install kind v0.33.0
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind version
+      # This is a local kind cluster, not the public internet, so unlike
+      # the demo job in jetsam's workflow this one is not advisory --
+      # make demo-up creates and seeds its own cluster and a failure here
+      # is a real failure.
+      - run: make demo-up
+      - run: make demo-test
+      - name: Dump fixture diagnostics
+        if: failure()
+        run: |
+          if [ -f fixture/kubeconfig ]; then
+            KUBECONFIG="$(pwd)/fixture/kubeconfig"
+            export KUBECONFIG
+            kubectl get all -A || true
+            kubectl describe ns sounding-demo sounding-retain-only sounding-crd || true
+            kubectl get events -A --sort-by=.lastTimestamp || true
+          else
+            echo "no fixture/kubeconfig -- cluster never came up"
+          fi
