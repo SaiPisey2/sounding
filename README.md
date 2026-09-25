@@ -177,3 +177,7 @@ make demo-down    # deletes the CRD, the namespaces, the PVs, and the cluster
 `demo-test` always rebuilds the binary first, and always runs with
 `-count=1`, so two consecutive runs are two real executions against the
 cluster, not one cached result reported twice.
+
+## License
+
+Apache 2.0
