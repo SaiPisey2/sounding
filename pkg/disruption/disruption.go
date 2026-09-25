@@ -21,10 +21,16 @@ import (
 // Removal describes a pod removal whose shape is not always known exactly:
 // a delete names Pods outright, but a scale-down only says how many of a
 // Selector's matches go, never which ones.
+//
+// Selector is a full label selector -- pass a Deployment's or StatefulSet's
+// spec.selector as it is, matchExpressions included. It is only read when
+// Count is above zero, and then it must be set: a nil Selector would match
+// no pods and turn a scale-down into a removal of nothing, so Assess refuses
+// it instead. An empty (non-nil) Selector matches every pod.
 type Removal struct {
-	Pods     []string          // exact pod names removed (delete)
-	Selector map[string]string // or: pods matching this, ...
-	Count    int               // ... of which this many are removed (scale down), worst case
+	Pods     []string              // exact pod names removed (delete)
+	Selector *metav1.LabelSelector // or: pods matching this, ...
+	Count    int                   // ... of which this many are removed (scale down), worst case
 }
 
 type Service struct {
@@ -69,7 +75,13 @@ func (r Report) Violated() []string {
 // Assess lists the namespace's EndpointSlices, PDBs and Pods -- three
 // requests -- and scores rm against them. Any list error is returned: a
 // Service this could not read is not a Service with backends to spare.
+// A Removal that cannot be evaluated -- a negative Count, a Count with a
+// nil Selector, or a Selector that does not parse -- is an error before any
+// request is made, never an empty Report.
 func Assess(ctx context.Context, c *cluster.Clients, ns string, rm Removal) (Report, error) {
+	if _, err := candidateSelector(rm); err != nil {
+		return Report{}, err
+	}
 	sl, err := c.Typed.DiscoveryV1().EndpointSlices(ns).List(ctx, metav1.ListOptions{})
 	*c.Calls++
 	if err != nil {
@@ -85,10 +97,35 @@ func Assess(ctx context.Context, c *cluster.Clients, ns string, rm Removal) (Rep
 	if err != nil {
 		return Report{}, fmt.Errorf("listing pods: %w", err)
 	}
-	return assess(sl.Items, pl.Items, po.Items, rm), nil
+	return assess(sl.Items, pl.Items, po.Items, rm)
 }
 
-func assess(slices []discoveryv1.EndpointSlice, pdbs []policyv1.PodDisruptionBudget, pods []corev1.Pod, rm Removal) Report {
+// candidateSelector returns the selector a scale-down draws its Count from,
+// or nil when the Removal names its pods outright. A Count with nothing to
+// draw it from is an error: silently removing zero pods would report every
+// Service and budget as untouched.
+func candidateSelector(rm Removal) (labels.Selector, error) {
+	if rm.Count < 0 {
+		return nil, fmt.Errorf("removal count %d is negative", rm.Count)
+	}
+	if rm.Count == 0 {
+		return nil, nil
+	}
+	if rm.Selector == nil {
+		return nil, fmt.Errorf("removal count %d has no selector to draw pods from", rm.Count)
+	}
+	sel, err := metav1.LabelSelectorAsSelector(rm.Selector)
+	if err != nil {
+		return nil, fmt.Errorf("removal selector: %w", err)
+	}
+	return sel, nil
+}
+
+func assess(slices []discoveryv1.EndpointSlice, pdbs []policyv1.PodDisruptionBudget, pods []corev1.Pod, rm Removal) (Report, error) {
+	candidate, err := candidateSelector(rm)
+	if err != nil {
+		return Report{}, err
+	}
 	podLabels := make(map[string]labels.Set, len(pods))
 	for _, p := range pods {
 		podLabels[p.Name] = labels.Set(p.Labels)
@@ -96,10 +133,6 @@ func assess(slices []discoveryv1.EndpointSlice, pdbs []policyv1.PodDisruptionBud
 	removed := make(map[string]bool, len(rm.Pods))
 	for _, p := range rm.Pods {
 		removed[p] = true
-	}
-	var candidate labels.Selector
-	if rm.Selector != nil {
-		candidate = labels.SelectorFromSet(rm.Selector)
 	}
 	// hit counts how many of the given pods this removal takes: exact names
 	// for a delete, and for a scale-down the worst case -- as many of the
@@ -126,7 +159,10 @@ func assess(slices []discoveryv1.EndpointSlice, pdbs []policyv1.PodDisruptionBud
 	// Ready backends per Service, keyed by pod name so a dual-stack pod --
 	// one endpoint in an IPv4 slice and one in an IPv6 slice -- counts
 	// once. An endpoint without a Pod targetRef is keyed by its first
-	// address; it can never be one of the removed pods.
+	// address; it can never be one of the removed pods. A dual-stack
+	// endpoint of that kind has a different first address in each slice,
+	// so it is counted twice: Ready and Left come out one too high for it,
+	// but it is never removed, so whether a Service is Emptied is unchanged.
 	ready := map[string]map[string]bool{}
 	for _, s := range slices {
 		svc := s.Labels[discoveryv1.LabelServiceName]
@@ -165,9 +201,14 @@ func assess(slices []discoveryv1.EndpointSlice, pdbs []policyv1.PodDisruptionBud
 		// policy/v1: a nil selector selects no pods; an empty one selects
 		// every pod. LabelSelectorAsSelector implements exactly that.
 		sel, err := metav1.LabelSelectorAsSelector(b.Spec.Selector)
-		if err != nil {
-			// An unparseable selector cannot be evaluated; report the
-			// budget as violated rather than as safe.
+		// A status older than the spec (observedGeneration behind
+		// generation) was computed for a budget that no longer exists --
+		// its DesiredHealthy may be for an older minAvailable. It cannot
+		// vouch for the removal, so the budget is reported as violated.
+		stale := b.Status.ObservedGeneration < b.Generation
+		if err != nil || stale {
+			// An unparseable selector or a stale status cannot be
+			// evaluated; report the budget as violated rather than as safe.
 			r.Budgets = append(r.Budgets, Budget{Name: b.Name, Healthy: int(b.Status.CurrentHealthy), Desired: int(b.Status.DesiredHealthy), Left: -1})
 			continue
 		}
@@ -190,5 +231,5 @@ func assess(slices []discoveryv1.EndpointSlice, pdbs []policyv1.PodDisruptionBud
 	}
 	sort.Slice(r.Services, func(i, j int) bool { return r.Services[i].Name < r.Services[j].Name })
 	sort.Slice(r.Budgets, func(i, j int) bool { return r.Budgets[i].Name < r.Budgets[j].Name })
-	return r
+	return r, nil
 }
