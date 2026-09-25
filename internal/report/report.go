@@ -65,7 +65,11 @@ func write(w io.Writer, f model.Finding, cap int) {
 	} else {
 		fmt.Fprintf(header, "  basis\t%s (%d/%d effects)\n", basis, matching, total)
 	}
-	fmt.Fprintf(header, "  objects\t%d across %d kinds\n", total, len(distinctKinds(f.Effects)))
+	// A "replaced" effect names an object another effect already destroys:
+	// it says the object comes back, not that a second one goes, so the
+	// object count leaves it out. Basis still counts it -- it is evidence.
+	counted := withoutKind(f.Effects, "replaced")
+	fmt.Fprintf(header, "  objects\t%d across %d kinds\n", len(counted), len(distinctKinds(counted)))
 	fmt.Fprintf(header, "  scanned\t%s, %d api calls\n", f.Scanned.UTC().Format(time.RFC3339), f.APICalls)
 	header.Flush()
 	fmt.Fprintln(w)
@@ -276,6 +280,16 @@ func summarizeBasis(effects []model.Effect) (label string, matching, total int) 
 // count a table by eye -- and so "zero" is stated as 0 objects across 0
 // kinds rather than by an empty section nobody can tell apart from a
 // report that simply forgot to render one.
+func withoutKind(effects []model.Effect, kind string) []model.Effect {
+	out := make([]model.Effect, 0, len(effects))
+	for _, e := range effects {
+		if e.Kind != kind {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func distinctKinds(effects []model.Effect) map[string]bool {
 	kinds := make(map[string]bool)
 	for _, e := range effects {

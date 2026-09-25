@@ -379,3 +379,25 @@ func TestReportStatesPlainlyWhenNoEffectsWereFound(t *testing.T) {
 		t.Errorf("report must state the object count positively as zero:\n%s", s)
 	}
 }
+
+// A "replaced" effect names the same object as its "destroys" effect: it
+// says the object comes back, not that a second object goes. Counting it
+// would print "objects 2" for the deletion of one Pod.
+func TestHeaderObjectCountLeavesOutReplacedEffects(t *testing.T) {
+	f := model.Finding{
+		Action: model.Action{Verb: "delete", Target: model.Target{Resource: "pod", Name: "web-1"}},
+		Effects: []model.Effect{
+			{Kind: "destroys", Basis: model.BasisComputed, Object: model.Target{Kind: "Pod", Name: "web-1"}, Explanation: "the target"},
+			{Kind: "replaced", Basis: model.BasisComputed, Object: model.Target{Kind: "Pod", Name: "web-1"}, Explanation: "recreated by its controller ReplicaSet/web"},
+		},
+		Class: model.ClassReversible, Scanned: time.Unix(0, 0).UTC(),
+	}
+	var b bytes.Buffer
+	WriteAll(&b, f)
+	if !strings.Contains(b.String(), "objects   1 across 1 kinds") {
+		t.Errorf("want the header to count one object:\n%s", b.String())
+	}
+	if !strings.Contains(b.String(), "replaced") {
+		t.Errorf("the replaced effect must still be listed:\n%s", b.String())
+	}
+}
