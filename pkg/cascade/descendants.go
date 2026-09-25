@@ -10,7 +10,10 @@ import "k8s.io/apimachinery/pkg/types"
 // or already deleted -- is treated as surviving, because this function
 // cannot see it go. That can understate only for a dependent whose other
 // owner was already gone before the delete, which the GC would already
-// have collected; it never counts a survivor as destroyed.
+// have collected; it never counts a survivor as destroyed. The same holds
+// for a namespaced owner of a kind that is not listable (no "list" verb, so
+// cascade.Enumerate never saw it): it is absent from objs, so it is treated
+// as surviving, and anything it co-owns is kept.
 //
 // It iterates to a fixpoint rather than walking children once, because an
 // object with two owners becomes deletable only after the second owner is

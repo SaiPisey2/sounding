@@ -76,6 +76,12 @@ type Finding struct {
 // zero value is ClassRead -- the most permissive class there is. A Finding
 // assembled by struct literal and never classified would report the safest
 // possible answer, which is the exact failure this package exists to stop.
+//
+// It applies no verb floor: floor is whatever the caller passes, and the
+// effects' bases only ever raise it. Passing ClassRead for a delete yields
+// a finding as safe as its weakest evidence, however destructive the verb.
+// A caller scoring an action should use score.Score, which supplies the
+// verb's floor; NewFinding is for callers that have already decided one.
 func NewFinding(a Action, effects []Effect, floor Class) Finding {
 	return Finding{
 		Action:  a,

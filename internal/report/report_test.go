@@ -401,3 +401,28 @@ func TestHeaderObjectCountLeavesOutReplacedEffects(t *testing.T) {
 		t.Errorf("the replaced effect must still be listed:\n%s", b.String())
 	}
 }
+
+// "replaced" is the only line that explains a REVERSIBLE verdict; a cap
+// that hid it would leave a list of destroyed objects under a class saying
+// nothing is lost.
+func TestCappedListingNeverHidesAReplacedEffect(t *testing.T) {
+	f := finding()
+	effects := manyEffects(24)
+	effects = append(effects, model.Effect{
+		Kind: "replaced", Basis: model.BasisComputed,
+		Object:      model.Target{Kind: "Pod", Name: "obj-0"},
+		Explanation: "recreated by its controller ReplicaSet/web",
+	})
+	f.Effects = effects // the replaced effect is at index 24, past the cap of 20
+	f.Class = model.ClassReversible
+
+	var b bytes.Buffer
+	Write(&b, f)
+	s := b.String()
+	if !strings.Contains(s, "recreated by its controller ReplicaSet/web") {
+		t.Errorf("a replaced effect past the cap must still be shown:\n%s", s)
+	}
+	if !strings.Contains(s, "... and 4 more (use --all to list every effect)") {
+		t.Errorf("a forced replaced effect must be additional to the cap:\n%s", s)
+	}
+}

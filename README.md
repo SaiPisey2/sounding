@@ -166,6 +166,11 @@ finding, which is COMPENSABLE's own exit code. `undo` is present only when
 - **A REVERSIBLE Pod delete's snapshot still contains the Pod.** Its
   controller will already have created a replacement, so restoring the
   bundle's copy alongside it would create a duplicate.
+- **REVERSIBLE does not check the replica count.** A Pod whose controller is
+  scaled to zero, or a StatefulSet Pod above the ordinal a scale-down is
+  about to remove, still scores `REVERSIBLE`, though nothing will recreate
+  it. sounding reads objects through the metadata client, which does not
+  return `spec.replicas`.
 
 ## The fixture
 
@@ -206,7 +211,15 @@ The engine lives in `pkg/` and is importable:
 | `pkg/snapshot` | captures manifests and writes a restore bundle |
 
 `disruption` and `selector` are library-only in this release; the CLI does
-not score `scale` or `patch` yet.
+not score `scale` or `patch` yet. `disruption.Assess(ctx, clients, ns, removal)`
+takes either exact pod names or a `*metav1.LabelSelector` (a Deployment's
+`spec.selector`, as it is) plus a count, and returns an error rather than an
+empty report when the count is negative or has no selector.
+
+A `cluster.Clients` is not safe for concurrent scoring: build one per
+goroutine with `NewForConfig`. `Finding.APICalls` counts the requests of the
+`Score` call that returned it. Setting `Target.Group` restricts which API
+group the resource name is resolved in.
 
 `internal/action` (command parsing) and `internal/report` (CLI output) stay
 private. The read-only guard walks the whole module, so `pkg/` is held to

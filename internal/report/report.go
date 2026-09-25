@@ -120,6 +120,10 @@ func write(w io.Writer, f model.Finding, cap int) {
 //     summarising a destroys-data effect at least tells the reader there
 //     is a known loss to look into; summarising an unknown-data-fate one
 //     hides the fact that there is anything to look into at all.
+//   - "replaced" -- the controller recreates the target. It is the only
+//     evidence in the listing for a REVERSIBLE verdict; with it capped
+//     away, a reader sees a list of destroyed objects under a class that
+//     says nothing is lost, and no line explaining why.
 //
 // "detaches-data" is deliberately NOT exempt: it means the data survives,
 // which is the one data-related outcome where summarising it behind
@@ -127,6 +131,7 @@ func write(w io.Writer, f model.Finding, cap int) {
 var alwaysShown = map[string]bool{
 	"destroys-data":     true,
 	"unknown-data-fate": true,
+	"replaced":          true,
 }
 
 // deprioritizedKinds holds object kinds that must not compete for the
@@ -187,7 +192,7 @@ func writeEffects(w io.Writer, effects []model.Effect, cap int) {
 // order, checking this result index by index. Three tiers, in priority
 // order:
 //
-//  1. alwaysShown effects (destroys-data, unknown-data-fate) are chosen
+//  1. alwaysShown effects (destroys-data, unknown-data-fate, replaced) are chosen
 //     unconditionally, exactly as in the previous two fix rounds, and do
 //     NOT draw against the ordinary budget below -- each one is ADDITIVE
 //     to cap, not a substitute for one of its slots, regardless of where
@@ -275,11 +280,9 @@ func summarizeBasis(effects []model.Effect) (label string, matching, total int) 
 	return string(worst), matching, total
 }
 
-// distinctKinds returns the set of object kinds present across effects, so
-// the report can say "N across K kinds" instead of leaving a reader to
-// count a table by eye -- and so "zero" is stated as 0 objects across 0
-// kinds rather than by an empty section nobody can tell apart from a
-// report that simply forgot to render one.
+// withoutKind drops effects of the given effect kind. The header count uses
+// it to leave out "replaced", which names an object already counted by its
+// "destroys" effect.
 func withoutKind(effects []model.Effect, kind string) []model.Effect {
 	out := make([]model.Effect, 0, len(effects))
 	for _, e := range effects {
@@ -290,6 +293,11 @@ func withoutKind(effects []model.Effect, kind string) []model.Effect {
 	return out
 }
 
+// distinctKinds returns the set of object kinds present across effects, so
+// the report can say "N across K kinds" instead of leaving a reader to
+// count a table by eye -- and so "zero" is stated as 0 objects across 0
+// kinds rather than by an empty section nobody can tell apart from a
+// report that simply forgot to render one.
 func distinctKinds(effects []model.Effect) map[string]bool {
 	kinds := make(map[string]bool)
 	for _, e := range effects {
