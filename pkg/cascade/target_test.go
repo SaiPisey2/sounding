@@ -186,3 +186,53 @@ func TestEnumerateKeepsDistinctObjectsFromASecondGroup(t *testing.T) {
 		t.Errorf("got UIDs %v, want both uid-a and uid-b", got)
 	}
 }
+
+// The score package decides whether a deleted Pod comes back from what
+// Enumerate records about its controller reference and about the
+// controller itself. A controller's kind read wrong, or a terminating
+// controller read as live, turns a lost Pod into a REVERSIBLE verdict, so
+// each field is checked against the ObjectMeta it came from.
+func TestEnumerateRecordsTheControllerAndWhetherAnObjectIsTerminating(t *testing.T) {
+	isController, notController := true, false
+	now := metav1.Now()
+	rsObj := &metav1.PartialObjectMetadata{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "ReplicaSet"},
+		ObjectMeta: metav1.ObjectMeta{Name: "web-7f", Namespace: "demo", UID: "rs", DeletionTimestamp: &now, Finalizers: []string{"x"}},
+	}
+	pod := &metav1.PartialObjectMetadata{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+		ObjectMeta: metav1.ObjectMeta{Name: "web-7f-a", Namespace: "demo", UID: "pod", OwnerReferences: []metav1.OwnerReference{
+			{APIVersion: "v1", Kind: "ConfigMap", Name: "not-the-controller", UID: "cm", Controller: &notController},
+			{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: "web-7f", UID: "rs", Controller: &isController},
+		}},
+	}
+	scheme := runtime.NewScheme()
+	if err := metav1.AddMetaToScheme(scheme); err != nil {
+		t.Fatalf("AddMetaToScheme: %v", err)
+	}
+	client := metadatafake.NewSimpleMetadataClient(scheme, rsObj, pod)
+	var calls int64
+	c := &cluster.Clients{Metadata: client, Calls: &calls}
+	rs := []cluster.Resource{
+		{GVR: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "replicasets"}, Kind: "ReplicaSet", Namespaced: true},
+		{GVR: schema.GroupVersionResource{Version: "v1", Resource: "pods"}, Kind: "Pod", Namespaced: true},
+	}
+	got, err := Enumerate(context.Background(), c, rs, "demo")
+	if err != nil {
+		t.Fatalf("Enumerate errored: %v", err)
+	}
+	byUID := map[types.UID]Object{}
+	for _, o := range got {
+		byUID[o.UID] = o
+	}
+	p := byUID["pod"]
+	if p.Controller != "rs" || p.ControllerKind != "ReplicaSet" || p.ControllerAPIVersion != "apps/v1" {
+		t.Errorf("pod controller = %q %q %q, want rs ReplicaSet apps/v1", p.Controller, p.ControllerKind, p.ControllerAPIVersion)
+	}
+	if p.Terminating {
+		t.Error("the pod has no deletionTimestamp but reads as terminating")
+	}
+	if !byUID["rs"].Terminating {
+		t.Error("the ReplicaSet has a deletionTimestamp but does not read as terminating")
+	}
+}

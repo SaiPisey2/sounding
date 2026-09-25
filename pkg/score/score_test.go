@@ -200,18 +200,94 @@ func TestResolveTargetResolvesAnObjectDelete(t *testing.T) {
 	}
 }
 
+// gcPod is a core/v1 Pod whose controller reference names ctrl.
+func gcPod(uid string, ctrl cascade.Object, apiVersion string) cascade.Object {
+	return cascade.Object{
+		UID:    types.UID(uid),
+		Target: model.Target{Version: "v1", Resource: "pods", Kind: "Pod", Name: uid},
+		Owners: []types.UID{ctrl.UID}, Controller: ctrl.UID,
+		ControllerKind: ctrl.Target.Kind, ControllerAPIVersion: apiVersion,
+	}
+}
+
+func gcController(uid, group, resource, kind, name string) cascade.Object {
+	return cascade.Object{UID: types.UID(uid), Target: model.Target{Group: group, Version: "v1", Resource: resource, Kind: kind, Name: name}}
+}
+
+// Only a Pod under one of the four controllers that keep a replica count
+// comes back as an equivalent object. Each case below is one the first
+// version of this rule scored REVERSIBLE -- exit 0 -- although nothing
+// equivalent is recreated.
 func TestControllerThatRecreates(t *testing.T) {
-	rs := cascade.Object{UID: "rs", Target: model.Target{Kind: "ReplicaSet", Name: "web-7f"}}
-	pod := cascade.Object{UID: "pod", Owners: []types.UID{"rs"}, Controller: "rs"}
-	all := []cascade.Object{rs, pod}
-	if got := controllerThatRecreates(pod, all, []cascade.Object{pod}); got != "ReplicaSet/web-7f" {
-		t.Errorf("got %q", got)
+	rs := gcController("rs", "apps", "replicasets", "ReplicaSet", "web-7f")
+	sts := gcController("sts", "apps", "statefulsets", "StatefulSet", "db")
+	ds := gcController("ds", "apps", "daemonsets", "DaemonSet", "agent")
+	rc := gcController("rc", "", "replicationcontrollers", "ReplicationController", "legacy")
+	for _, tc := range []struct {
+		ctrl       cascade.Object
+		apiVersion string
+		want       string
+	}{
+		{rs, "apps/v1", "ReplicaSet/web-7f"},
+		{sts, "apps/v1", "StatefulSet/db"},
+		{ds, "apps/v1", "DaemonSet/agent"},
+		{rc, "v1", "ReplicationController/legacy"},
+	} {
+		pod := gcPod("pod-"+string(tc.ctrl.UID), tc.ctrl, tc.apiVersion)
+		all := []cascade.Object{tc.ctrl, pod}
+		if got := controllerThatRecreates(pod, all, []cascade.Object{pod}); got != tc.want {
+			t.Errorf("%s -> Pod: got %q, want %q", tc.ctrl.Target.Kind, got, tc.want)
+		}
 	}
-	if got := controllerThatRecreates(pod, all, all); got != "" {
-		t.Errorf("a controller deleted with it recreates nothing, got %q", got)
+}
+
+func TestControllerThatRecreatesRefusesEverythingElse(t *testing.T) {
+	rs := gcController("rs", "apps", "replicasets", "ReplicaSet", "web-7f")
+	dep := gcController("dep", "apps", "deployments", "Deployment", "web")
+	cron := gcController("cron", "batch", "cronjobs", "CronJob", "nightly")
+	job := gcController("job", "batch", "jobs", "Job", "nightly-1")
+	isCtrl := func(o, ctrl cascade.Object, apiVersion string) cascade.Object {
+		o.Owners, o.Controller = []types.UID{ctrl.UID}, ctrl.UID
+		o.ControllerKind, o.ControllerAPIVersion = ctrl.Target.Kind, apiVersion
+		return o
 	}
-	if got := controllerThatRecreates(rs, all, []cascade.Object{rs, pod}); got != "" {
-		t.Errorf("an object with no controller, got %q", got)
+	terminatingRS := rs
+	terminatingRS.Terminating = true
+
+	for _, tc := range []struct {
+		name    string
+		root    cascade.Object
+		all     []cascade.Object
+		deleted []cascade.Object
+	}{
+		{"CronJob -> Job", isCtrl(job, cron, "batch/v1"), []cascade.Object{cron, job}, nil},
+		{"Deployment -> ReplicaSet", isCtrl(rs, dep, "apps/v1"), []cascade.Object{dep, rs}, nil},
+		{"Job -> Pod", gcPod("p", job, "batch/v1"), []cascade.Object{job}, nil},
+		{"Pod whose controller is absent", gcPod("p", rs, "apps/v1"), nil, nil},
+		{"Pod whose ReplicaSet is terminating", gcPod("p", rs, "apps/v1"), []cascade.Object{terminatingRS}, nil},
+		{"Pod whose ReplicaSet is deleted with it", gcPod("p", rs, "apps/v1"), []cascade.Object{rs}, []cascade.Object{rs}},
+		{"ConfigMap under a ReplicaSet (only a Pod comes back)", isCtrl(gcController("cm", "", "configmaps", "ConfigMap", "cfg"), rs, "apps/v1"), []cascade.Object{rs}, nil},
+		{"Pod with no controller", cascade.Object{UID: "p", Target: model.Target{Version: "v1", Resource: "pods", Kind: "Pod"}}, []cascade.Object{rs}, nil},
+		{"Pod whose ownerRef says ReplicaSet but the UID is a Deployment", gcPod("p", cascade.Object{UID: "dep", Target: model.Target{Kind: "ReplicaSet"}}, "apps/v1"), []cascade.Object{dep}, nil},
+	} {
+		deleted := append([]cascade.Object{tc.root}, tc.deleted...)
+		all := append([]cascade.Object{tc.root}, tc.all...)
+		if got := controllerThatRecreates(tc.root, all, deleted); got != "" {
+			t.Errorf("%s: got %q, want not replaced", tc.name, got)
+		}
+	}
+}
+
+// replaced lowers only the verb floor. A controlled Pod whose cascade
+// reaches a Delete-policy volume must stay TERMINAL.
+func TestClassifyKeepsAVolumeClassAboveAReplacedFloor(t *testing.T) {
+	act := model.Action{Verb: "delete", Target: model.Target{Resource: "pods", Name: "web-1", Namespace: "prod"}}
+	got, err := classify(act, nil, model.ClassTerminal, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Class != model.ClassTerminal {
+		t.Errorf("class = %v, want TERMINAL", got.Class)
 	}
 }
 

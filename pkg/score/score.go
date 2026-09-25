@@ -296,13 +296,31 @@ func resolveTarget(act model.Action, resources []cluster.Resource) (target, erro
 	return target{namespace: act.Target.Namespace, object: &resolved, name: act.Target.Name}, nil
 }
 
+// recreatingControllers are the owner kinds, by the apiVersion and kind an
+// ownerReference names, that keep a replica count and put an equivalent
+// Pod back when one of theirs is deleted. It is an allowlist on purpose:
+// "a surviving controller" alone scored a CronJob's Job, a Deployment's
+// old ReplicaSet, a Job's finished Pod and an operator's Secret REVERSIBLE,
+// and none of those comes back as it was.
+var recreatingControllers = map[[2]string]bool{
+	{"apps/v1", "ReplicaSet"}:       true,
+	{"apps/v1", "StatefulSet"}:      true,
+	{"apps/v1", "DaemonSet"}:        true,
+	{"v1", "ReplicationController"}: true,
+}
+
 // controllerThatRecreates names the controller that will put root back
-// after it is deleted, or "" when nothing will. A controller that is in
-// the deleted set itself recreates nothing. A controller UID that is not
-// in the namespace at all -- a cluster-scoped owner -- is taken to
-// survive, and is named by UID since its kind cannot be seen from here.
+// after it is deleted, or "" when nothing will. Only a core Pod qualifies,
+// and only when its controller reference is one of recreatingControllers
+// and that controller is in the namespace, is not terminating, and is not
+// deleted along with root. A controller UID that is not in the namespace
+// is not taken on trust: this package cannot see it, so it cannot say it
+// will recreate anything.
 func controllerThatRecreates(root cascade.Object, all, deleted []cascade.Object) string {
-	if root.Controller == "" {
+	if root.Target.Group != "" || root.Target.Resource != "pods" || root.Controller == "" {
+		return ""
+	}
+	if !recreatingControllers[[2]string{root.ControllerAPIVersion, root.ControllerKind}] {
 		return ""
 	}
 	for _, o := range deleted {
@@ -310,12 +328,22 @@ func controllerThatRecreates(root cascade.Object, all, deleted []cascade.Object)
 			return ""
 		}
 	}
-	for _, o := range all {
-		if o.UID == root.Controller {
-			return o.Target.Kind + "/" + o.Target.Name
-		}
+	group := ""
+	if i := strings.Index(root.ControllerAPIVersion, "/"); i >= 0 {
+		group = root.ControllerAPIVersion[:i]
 	}
-	return "controller " + string(root.Controller)
+	for _, o := range all {
+		if o.UID != root.Controller {
+			continue
+		}
+		// The object behind the UID must be the kind the reference
+		// claims; a mismatch is a reference this package cannot vouch for.
+		if o.Terminating || o.Target.Kind != root.ControllerKind || o.Target.Group != group {
+			return ""
+		}
+		return o.Target.Kind + "/" + o.Target.Name
+	}
+	return ""
 }
 
 // namespaceMustExist refuses before any enumeration happens if ns does not

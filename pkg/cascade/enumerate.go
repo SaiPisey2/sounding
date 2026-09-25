@@ -24,7 +24,17 @@ type Object struct {
 	// object is undone by its controller recreating it -- a Pod under a
 	// ReplicaSet -- rather than a loss.
 	Controller types.UID
-	Finalizers []string
+	// ControllerKind and ControllerAPIVersion are that same reference's
+	// kind and apiVersion. Only four controllers put an equivalent Pod
+	// back, and telling them from a CronJob or an operator's custom
+	// resource needs the kind the reference names, not just its UID.
+	ControllerKind       string
+	ControllerAPIVersion string
+	// Terminating is true when the object has a deletionTimestamp. A
+	// controller already being deleted recreates nothing, however live it
+	// still looks in a list.
+	Terminating bool
+	Finalizers  []string
 }
 
 // Enumerate lists every object in ns across every listable namespaced
@@ -76,10 +86,12 @@ func Enumerate(ctx context.Context, c *cluster.Clients, rs []cluster.Resource, n
 			seen[item.UID] = true
 			var owners []types.UID
 			var controller types.UID
+			var controllerKind, controllerAPIVersion string
 			for _, o := range item.OwnerReferences {
 				owners = append(owners, o.UID)
 				if o.Controller != nil && *o.Controller {
 					controller = o.UID
+					controllerKind, controllerAPIVersion = o.Kind, o.APIVersion
 				}
 			}
 			out = append(out, Object{
@@ -91,10 +103,13 @@ func Enumerate(ctx context.Context, c *cluster.Clients, rs []cluster.Resource, n
 					Namespace: item.Namespace,
 					Name:      item.Name,
 				},
-				UID:        item.UID,
-				Owners:     owners,
-				Controller: controller,
-				Finalizers: item.Finalizers,
+				UID:                  item.UID,
+				Owners:               owners,
+				Controller:           controller,
+				ControllerKind:       controllerKind,
+				ControllerAPIVersion: controllerAPIVersion,
+				Terminating:          item.DeletionTimestamp != nil,
+				Finalizers:           item.Finalizers,
 			})
 		}
 	}

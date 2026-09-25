@@ -38,9 +38,11 @@ it is `Retain`. Nothing else about the namespace has to change.
 It also scores deleting one object: `sounding score "delete deployment api -n shop"`
 walks what the garbage collector would take with it -- ReplicaSets, Pods, and any
 claim the object owns -- following Kubernetes' rule that a dependent goes only
-when every one of its owners does. Deleting a Pod that a controller manages scores
-`REVERSIBLE`: the controller puts it back. An object delete needs `-n`; sounding
-cannot see your kubeconfig's default namespace and will not guess it.
+when every one of its owners does. Deleting a Pod that a ReplicaSet, StatefulSet,
+DaemonSet or ReplicationController manages scores `REVERSIBLE`: the controller puts
+it back. Any other object, under any other controller or none, scores `COMPENSABLE`
+or worse. An object delete needs `-n`; sounding cannot see your kubeconfig's
+default namespace and will not guess it.
 
 ## What it does not do
 
@@ -161,6 +163,9 @@ finding, which is COMPENSABLE's own exit code. `undo` is present only when
   manifests sounding can see through the Kubernetes API. It cannot capture
   what is inside a PersistentVolume, so a `Delete`-policy volume's data is
   gone regardless of whether `--snapshot` was used.
+- **A REVERSIBLE Pod delete's snapshot still contains the Pod.** Its
+  controller will already have created a replacement, so restoring the
+  bundle's copy alongside it would create a duplicate.
 
 ## The fixture
 
