@@ -24,7 +24,7 @@ import (
 // does. Every effect enumeration produces here carries BasisComputed, whose
 // own floor is ClassRead -- the most permissive class there is -- so this
 // pins that classify() supplies its own floor on top of that rather than
-// trusting Classify's basis rules alone. Dropping verbFloor() in favour of
+// trusting Classify's basis rules alone. Dropping floorFor() in favour of
 // model.ClassRead is exactly the regression this exists to catch: it
 // compiles, and it would print READ for a namespace full of measured,
 // destructive effects.
@@ -34,7 +34,7 @@ func TestClassifyAppliesTheVerbFloorEvenWhenEveryEffectIsComputed(t *testing.T) 
 		{Kind: "destroys", Basis: model.BasisComputed, Object: model.Target{Kind: "Pod", Name: "api-1"}, Explanation: "in the namespace"},
 	}
 
-	got, err := classify(act, effects, model.ClassRead)
+	got, err := classify(act, effects, model.ClassRead, false)
 	if err != nil {
 		t.Fatalf("classify returned an error: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestClassifyAppliesTheVerbFloorEvenWhenEveryEffectIsComputed(t *testing.T) 
 // verb floor is a MINIMUM the volume join can raise, never a ceiling.
 func TestClassifyLetsVolumeClassRaiseAboveTheVerbFloor(t *testing.T) {
 	act := model.Action{Verb: "delete", Target: model.Target{Resource: "namespaces", Name: "prod-payments"}}
-	got, err := classify(act, nil, model.ClassTerminal)
+	got, err := classify(act, nil, model.ClassTerminal, false)
 	if err != nil {
 		t.Fatalf("classify returned an error: %v", err)
 	}
@@ -59,12 +59,12 @@ func TestClassifyLetsVolumeClassRaiseAboveTheVerbFloor(t *testing.T) {
 	}
 }
 
-// verbFloor requires an explicit case per verb rather than a constant every
+// floorFor requires an explicit case per verb rather than a constant every
 // caller reuses; a verb it does not recognise must refuse rather than
 // silently inherit "delete"'s floor.
 func TestClassifyRefusesAVerbWithNoFloorDefined(t *testing.T) {
 	act := model.Action{Verb: "scale", Target: model.Target{Resource: "deployments", Name: "api"}}
-	_, err := classify(act, nil, model.ClassRead)
+	_, err := classify(act, nil, model.ClassRead, false)
 	if err == nil {
 		t.Fatal("want an error for a verb with no floor defined, got nil")
 	}
@@ -93,9 +93,9 @@ func TestRenderedReportListsOwnerBeforeOwned(t *testing.T) {
 		{Target: model.Target{Kind: "Deployment", Name: "web"}, UID: dep},
 	}
 
-	effects := destroyEffectsFromObjects(objs)
+	effects := destroyEffectsFromObjects(objs, func(cascade.Object) string { return "in the namespace" })
 	act := model.Action{Verb: "delete", Target: model.Target{Resource: "namespaces", Name: "prod"}}
-	finding, err := classify(act, effects, model.ClassRead)
+	finding, err := classify(act, effects, model.ClassRead, false)
 	if err != nil {
 		t.Fatalf("classify errored: %v", err)
 	}
@@ -115,64 +115,103 @@ func TestRenderedReportListsOwnerBeforeOwned(t *testing.T) {
 	}
 }
 
-func TestTargetNamespaceRecognisesNamespaceDeleteDirectly(t *testing.T) {
+func TestResolveTargetRecognisesNamespaceDeleteDirectly(t *testing.T) {
 	act := model.Action{Verb: "delete", Target: model.Target{Resource: "namespaces", Name: "prod-payments"}}
-	ns, err := targetNamespace(act, nil)
+	tg, err := resolveTarget(act, nil)
 	if err != nil {
-		t.Fatalf("targetNamespace returned an error: %v", err)
+		t.Fatalf("resolveTarget returned an error: %v", err)
 	}
-	if ns != "prod-payments" {
-		t.Errorf("ns = %q, want prod-payments", ns)
+	if tg.namespace != "prod-payments" {
+		t.Errorf("ns = %q, want prod-payments", tg.namespace)
+	}
+	if tg.object != nil {
+		t.Errorf("a namespace delete has no root object, got %+v", tg.object)
 	}
 }
 
-func TestTargetNamespaceRefusesAVerbWithNoAnalyser(t *testing.T) {
+// The exact text is pinned, not just the verb: the namespace path's
+// refusals must read byte-for-byte as they did before object deletes were
+// scored, and resolveTarget now does its own ErrRefused wrapping -- a
+// Score that wrapped it a second time would print "refused: refused: ...".
+func TestResolveTargetRefusesAVerbWithNoAnalyser(t *testing.T) {
 	act := model.Action{Verb: "scale", Target: model.Target{Resource: "deployments", Name: "api"}}
-	_, err := targetNamespace(act, nil)
+	_, err := resolveTarget(act, nil)
 	if err == nil {
 		t.Fatal("want a refusal for an unanalysed verb, got nil")
 	}
 	if !strings.Contains(err.Error(), "scale") {
 		t.Errorf("refusal must name the verb it could not analyse: %v", err)
 	}
-}
-
-// Namespace is cluster-scoped and therefore never appears in
-// ListableNamespaced's output; a resource that legitimately exists but
-// this build has no analyzer for must still be resolved against discovery
-// before being named in the refusal, rather than repeating whatever the
-// caller typed. The input here is deliberately the SINGULAR "pod", not the
-// plural "pods": asserting the refusal names "pods" only proves something
-// if the input could not already satisfy that assertion on its own --
-// with "pods" in and "pods" asserted, the test would pass even if
-// targetNamespace echoed the unresolved string straight back without
-// calling cluster.ResolveResource at all.
-func TestTargetNamespaceResolvesOtherResourcesBeforeRefusing(t *testing.T) {
-	rs := []cluster.Resource{
-		{GVR: schema.GroupVersionResource{Version: "v1", Resource: "pods"}, Kind: "Pod", Namespaced: true, SingularName: "pod"},
-	}
-	act := model.Action{Verb: "delete", Target: model.Target{Resource: "pod", Name: "api-1", Namespace: "prod"}}
-	_, err := targetNamespace(act, rs)
-	if err == nil {
-		t.Fatal("want a refusal -- only delete namespace is supported, got nil")
-	}
-	if !strings.Contains(err.Error(), "pods") {
-		t.Errorf("refusal must name the resolved resource: %v", err)
+	if !errors.Is(err, ErrRefused) || err.Error() != `refused: verb "scale" has no analyzer` {
+		t.Errorf("err = %q, want exactly %q wrapping ErrRefused", err, `refused: verb "scale" has no analyzer`)
 	}
 }
 
-func TestTargetNamespacePropagatesAnAmbiguousResourceRefusal(t *testing.T) {
+func TestResolveTargetPropagatesAnAmbiguousResourceRefusal(t *testing.T) {
 	rs := []cluster.Resource{
 		{GVR: schema.GroupVersionResource{Version: "v1", Resource: "ingresses"}, Kind: "Ingress", Namespaced: true, SingularName: "ingress"},
 		{GVR: schema.GroupVersionResource{Group: "widgets.example.com", Version: "v1", Resource: "ingressclasses"}, Kind: "IngressClass", Namespaced: true, SingularName: "ingress"},
 	}
 	act := model.Action{Verb: "delete", Target: model.Target{Resource: "ingress", Name: "x", Namespace: "prod"}}
-	_, err := targetNamespace(act, rs)
+	_, err := resolveTarget(act, rs)
 	if err == nil {
 		t.Fatal("want the ambiguous-match refusal to propagate, got nil")
 	}
+	if !errors.Is(err, ErrRefused) {
+		t.Errorf("an ambiguous resource must be a refusal: %v", err)
+	}
 	if !strings.Contains(err.Error(), "ingresses") || !strings.Contains(err.Error(), "ingressclasses") {
 		t.Errorf("refusal must name both candidates: %v", err)
+	}
+}
+
+func TestFloorForAControlledPodIsReversible(t *testing.T) {
+	got, err := floorFor("delete", true)
+	if err != nil || got != model.ClassReversible {
+		t.Errorf("floorFor(delete, replaced) = %v, %v; want REVERSIBLE", got, err)
+	}
+}
+
+func TestFloorForAnUncontrolledObjectIsCompensable(t *testing.T) {
+	got, err := floorFor("delete", false)
+	if err != nil || got != model.ClassCompensable {
+		t.Errorf("floorFor(delete, not replaced) = %v, %v; want COMPENSABLE", got, err)
+	}
+}
+
+func TestResolveTargetRefusesAnObjectDeleteWithoutANamespace(t *testing.T) {
+	rs := []cluster.Resource{{GVR: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, Kind: "Deployment", Namespaced: true, SingularName: "deployment"}}
+	act := model.Action{Verb: "delete", Target: model.Target{Resource: "deployment", Name: "api"}}
+	_, err := resolveTarget(act, rs)
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "namespace") {
+		t.Errorf("err = %v, want a refusal naming the missing namespace", err)
+	}
+}
+
+func TestResolveTargetResolvesAnObjectDelete(t *testing.T) {
+	rs := []cluster.Resource{{GVR: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, Kind: "Deployment", Namespaced: true, SingularName: "deployment"}}
+	act := model.Action{Verb: "delete", Target: model.Target{Resource: "deployment", Name: "api", Namespace: "demo"}}
+	tg, err := resolveTarget(act, rs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tg.namespace != "demo" || tg.object == nil || tg.object.GVR.Resource != "deployments" || tg.name != "api" {
+		t.Errorf("target = %+v", tg)
+	}
+}
+
+func TestControllerThatRecreates(t *testing.T) {
+	rs := cascade.Object{UID: "rs", Target: model.Target{Kind: "ReplicaSet", Name: "web-7f"}}
+	pod := cascade.Object{UID: "pod", Owners: []types.UID{"rs"}, Controller: "rs"}
+	all := []cascade.Object{rs, pod}
+	if got := controllerThatRecreates(pod, all, []cascade.Object{pod}); got != "ReplicaSet/web-7f" {
+		t.Errorf("got %q", got)
+	}
+	if got := controllerThatRecreates(pod, all, all); got != "" {
+		t.Errorf("a controller deleted with it recreates nothing, got %q", got)
+	}
+	if got := controllerThatRecreates(rs, all, []cascade.Object{rs, pod}); got != "" {
+		t.Errorf("an object with no controller, got %q", got)
 	}
 }
 

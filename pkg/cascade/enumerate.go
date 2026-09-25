@@ -16,9 +16,14 @@ import (
 // Object is one live object as sounding sees it: enough to place it in the
 // ownership graph and enough to name it in a report or a restore plan.
 type Object struct {
-	Target     model.Target
-	UID        types.UID
-	Owners     []types.UID
+	Target model.Target
+	UID    types.UID
+	Owners []types.UID
+	// Controller is the UID of the owner reference marked controller=true,
+	// empty when there is none. It is what tells a score that deleting this
+	// object is undone by its controller recreating it -- a Pod under a
+	// ReplicaSet -- rather than a loss.
+	Controller types.UID
 	Finalizers []string
 }
 
@@ -70,8 +75,12 @@ func Enumerate(ctx context.Context, c *cluster.Clients, rs []cluster.Resource, n
 			}
 			seen[item.UID] = true
 			var owners []types.UID
+			var controller types.UID
 			for _, o := range item.OwnerReferences {
 				owners = append(owners, o.UID)
+				if o.Controller != nil && *o.Controller {
+					controller = o.UID
+				}
 			}
 			out = append(out, Object{
 				Target: model.Target{
@@ -84,6 +93,7 @@ func Enumerate(ctx context.Context, c *cluster.Clients, rs []cluster.Resource, n
 				},
 				UID:        item.UID,
 				Owners:     owners,
+				Controller: controller,
 				Finalizers: item.Finalizers,
 			})
 		}

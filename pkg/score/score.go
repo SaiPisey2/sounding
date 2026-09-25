@@ -1,6 +1,6 @@
 // Package score turns an action into a Finding against a live cluster. It
 // is the one place the class-composition rule lives --
-// Classify(effects, max(verbFloor, volumeClass)) -- so the sounding CLI and
+// Classify(effects, max(floorFor, volumeClass)) -- so the sounding CLI and
 // any other front end that imports this package cannot disagree about what
 // an action is. Before this package existed the rule sat in the CLI's main,
 // and a second front end would have had to copy it; a copy that dropped
@@ -74,10 +74,14 @@ func Score(ctx context.Context, c *cluster.Clients, act model.Action, opts Optio
 		return model.Finding{}, fmt.Errorf("%w: listing namespaced resources: %v", ErrOperational, err)
 	}
 
-	ns, err := targetNamespace(act, resources)
+	// resolveTarget's errors already wrap ErrRefused, with the same text
+	// this path printed before object deletes were scored; wrapping them a
+	// second time here would print "refused: refused: ...".
+	tg, err := resolveTarget(act, resources)
 	if err != nil {
-		return model.Finding{}, fmt.Errorf("%w: %v", ErrRefused, err)
+		return model.Finding{}, err
 	}
+	ns := tg.namespace
 
 	if err := namespaceMustExist(ctx, c, ns); err != nil {
 		return model.Finding{}, err
@@ -88,7 +92,50 @@ func Score(ctx context.Context, c *cluster.Clients, act model.Action, opts Optio
 		return model.Finding{}, fmt.Errorf("%w: enumerating namespace %q: %v", ErrOperational, ns, err)
 	}
 
-	effects := destroyEffectsFromObjects(objs)
+	replaced, replacedBy := false, ""
+	var rootTarget model.Target
+	explain := func(cascade.Object) string { return "in the namespace" }
+	if tg.object != nil {
+		var root *cascade.Object
+		for i := range objs {
+			o := &objs[i]
+			if o.Target.Group == tg.object.GVR.Group && o.Target.Resource == tg.object.GVR.Resource && o.Target.Name == tg.name {
+				root = o
+				break
+			}
+		}
+		if root == nil {
+			// Scoring an absent object as an empty cascade would print a
+			// confident verdict for a command kubectl itself rejects with
+			// NotFound -- the object-level twin of namespaceMustExist.
+			return model.Finding{}, fmt.Errorf("%w: %s/%s does not exist in namespace %q", ErrRefused, tg.object.GVR.Resource, tg.name, tg.namespace)
+		}
+		rootUID := root.UID
+		rootTarget = root.Target
+		all := objs
+		// Everything past this point -- the effects, the volume join, the
+		// snapshot -- sees only what the garbage collector takes with the
+		// root. A PVC in the namespace that the target does not own is not
+		// destroyed by this delete, and naming its PV's reclaim policy would
+		// grade the command by data it never touches.
+		objs = cascade.Descendants(all, rootUID)
+		replacedBy = controllerThatRecreates(*root, all, objs)
+		replaced = replacedBy != ""
+		explain = func(o cascade.Object) string {
+			if o.UID == rootUID {
+				return "the target"
+			}
+			return "owned by the target; removed by garbage collection"
+		}
+	}
+
+	effects := destroyEffectsFromObjects(objs, explain)
+	if replaced {
+		effects = append(effects, model.Effect{
+			Kind: "replaced", Basis: model.BasisComputed, Object: rootTarget,
+			Explanation: "recreated by its controller " + replacedBy,
+		})
+	}
 
 	volEffects, volClass, err := volume.Join(ctx, c, objs)
 	if err != nil {
@@ -96,12 +143,12 @@ func Score(ctx context.Context, c *cluster.Clients, act model.Action, opts Optio
 	}
 	effects = append(effects, volEffects...)
 
-	finding, err := classify(act, effects, volClass)
+	finding, err := classify(act, effects, volClass, replaced)
 	if err != nil {
-		// targetNamespace already refuses every verb but "delete" before
+		// resolveTarget already refuses every verb but "delete" before
 		// this point is ever reached, so this is not a real user-facing
-		// case today -- it is verbFloor's own defence against a second
-		// verb being wired into targetNamespace without anyone adding a
+		// case today -- it is floorFor's own defence against a second
+		// verb being wired into resolveTarget without anyone adding a
 		// matching case here, which would otherwise silently inherit
 		// "delete namespace"'s floor for a verb that has never been
 		// analysed.
@@ -128,13 +175,19 @@ func Score(ctx context.Context, c *cluster.Clients, act model.Action, opts Optio
 // classify composes the final class from the verb's own floor and the
 // worst class the volume join found, then builds the Finding through the
 // package's one constructor. It is pulled out of score as its own function
-// so the composition rule -- floor := max(verbFloor(act.Verb), volClass) --
-// can be exercised directly, without a live cluster, by a test that would
-// otherwise have no way to catch a regression here: bypassing verbFloor in
+// so the composition rule -- floor := max(floorFor(act.Verb, replaced),
+// volClass) -- can be exercised directly, without a live cluster, by a test
+// that would otherwise have no way to catch a regression here: bypassing
+// floorFor in
 // favour of model.ClassRead compiles cleanly and only shows up as every
 // namespace deletion reporting the single most permissive class there is.
-func classify(act model.Action, effects []model.Effect, volClass model.Class) (model.Finding, error) {
-	floor, err := verbFloor(act.Verb)
+//
+// replaced lowers only the verb's floor, never volClass: a Pod its
+// controller recreates is REVERSIBLE as an object, but if what it takes
+// with it includes a claim whose data cannot come back, the volume join's
+// TERMINAL still wins.
+func classify(act model.Action, effects []model.Effect, volClass model.Class, replaced bool) (model.Finding, error) {
+	floor, err := floorFor(act.Verb, replaced)
 	if err != nil {
 		return model.Finding{}, err
 	}
@@ -144,7 +197,7 @@ func classify(act model.Action, effects []model.Effect, volClass model.Class) (m
 	return model.NewFinding(act, effects, floor), nil
 }
 
-// verbFloor is the worst class this build will ever report for verb,
+// floorFor is the worst class this build will ever report for verb,
 // regardless of what Classify's basis rules alone would allow. Classify
 // only ever raises a finding to the floor each EFFECT's basis imposes --
 // it has no notion of what the verb being scored actually does. Every
@@ -161,10 +214,21 @@ func classify(act model.Action, effects []model.Effect, volClass model.Class) (m
 // a single constant every caller reuses, on purpose: a second verb reaching
 // this function without a case of its own is refused instead of silently
 // inheriting "delete"'s floor for behaviour nobody has actually analysed.
-func verbFloor(verb string) (model.Class, error) {
+//
+// replacedByController is the one fact about the target, rather than the
+// verb, that moves the floor: deleting an object its controller recreates
+// is undone by the cluster itself, and grading it COMPENSABLE would make a
+// gate hold every routine pod restart.
+func floorFor(verb string, replacedByController bool) (model.Class, error) {
 	switch verb {
 	case "delete":
-		// The objects a namespace deletion destroys ARE restorable from a
+		if replacedByController {
+			// The object's controller recreates it -- a Pod under a
+			// ReplicaSet or StatefulSet. Nothing is lost that the cluster
+			// does not put back by itself.
+			return model.ClassReversible, nil
+		}
+		// The objects a deletion destroys ARE restorable from a
 		// snapshot even when the data behind some of them is not, which is
 		// why this is ClassCompensable and not ClassTerminal -- volume.Join
 		// is what raises the floor further, per object, when data
@@ -175,39 +239,83 @@ func verbFloor(verb string) (model.Class, error) {
 	}
 }
 
-// targetNamespace decides which namespace act would tear down, or refuses.
-// "delete namespace" is the only verb/resource pair this build understands
-// end to end, because cascade.Enumerate always lists an entire namespace's
-// contents -- nothing in this codebase yet computes a narrower "what falls
-// if only this one object goes" graph.
+// target is what an action resolves to before anything is enumerated:
+// always a namespace, plus, for an object delete, the resource and name
+// of the one object at the root of the cascade.
+type target struct {
+	namespace string
+	object    *cluster.Resource // nil for "delete namespace"
+	name      string
+}
+
+// resolveTarget decides what act would tear down, or refuses. Two shapes
+// are understood end to end: "delete namespace <name>", whose cascade is
+// everything cascade.Enumerate lists in that namespace, and
+// "delete <namespaced-resource> <name> -n <ns>", whose cascade is the
+// object plus whatever cascade.Descendants says the garbage collector
+// takes with it. Every error it returns already wraps ErrRefused, so
+// Score returns them as they are.
 //
 // Namespace itself is deliberately absent from resources: it is a
 // cluster-scoped kind, ListableNamespaced only ever reports namespaced
 // ones, and no amount of resolving against that list will ever produce it.
 // So it is recognised directly, by name, rather than through
-// cluster.ResolveResource. Every OTHER resource string -- typed exactly as
-// the caller wrote it, since action.ParseCommand no longer guesses a
-// plural -- is resolved against live discovery before it is used for
-// anything, including before it is named in a refusal, so a caller is
-// refused with the resource's real name and, when the string is
+// cluster.ResolveResource. The same fact is what refuses every other
+// cluster-scoped kind (R8): it never appears in resources, so
+// ResolveResource refuses it rather than scoring a delete whose cascade
+// this package cannot enumerate. Every OTHER resource string -- typed
+// exactly as the caller wrote it, since action.ParseCommand no longer
+// guesses a plural -- is resolved against live discovery before it is
+// used for anything, including before it is named in a refusal, so a
+// caller is refused with the resource's real name and, when the string is
 // genuinely ambiguous, the real candidates -- never a plural nobody typed
 // that happens to match nothing.
-func targetNamespace(act model.Action, resources []cluster.Resource) (string, error) {
+func resolveTarget(act model.Action, resources []cluster.Resource) (target, error) {
 	if act.Verb != "delete" {
-		return "", fmt.Errorf("verb %q has no analyzer", act.Verb)
+		return target{}, fmt.Errorf("%w: verb %q has no analyzer", ErrRefused, act.Verb)
 	}
 	if isNamespaceResource(act.Target.Resource) {
 		if act.Target.Name == "" {
-			return "", fmt.Errorf("delete namespace requires a name")
+			return target{}, fmt.Errorf("%w: delete namespace requires a name", ErrRefused)
 		}
-		return act.Target.Name, nil
+		return target{namespace: act.Target.Name}, nil
 	}
-
 	resolved, err := cluster.ResolveResource(resources, act.Target.Resource)
 	if err != nil {
-		return "", err
+		return target{}, fmt.Errorf("%w: %w", ErrRefused, err)
 	}
-	return "", fmt.Errorf("delete %s has no analyzer yet -- only delete namespace is supported", resolved.GVR.Resource)
+	if act.Target.Name == "" {
+		return target{}, fmt.Errorf("%w: delete %s requires a name", ErrRefused, resolved.GVR.Resource)
+	}
+	// kubectl would fall back to the kubeconfig context's namespace. That
+	// is state this package never sees, and guessing "default" would score
+	// a different object than the one the command deletes.
+	if act.Target.Namespace == "" {
+		return target{}, fmt.Errorf("%w: delete %s/%s requires a namespace (-n)", ErrRefused, resolved.GVR.Resource, act.Target.Name)
+	}
+	return target{namespace: act.Target.Namespace, object: &resolved, name: act.Target.Name}, nil
+}
+
+// controllerThatRecreates names the controller that will put root back
+// after it is deleted, or "" when nothing will. A controller that is in
+// the deleted set itself recreates nothing. A controller UID that is not
+// in the namespace at all -- a cluster-scoped owner -- is taken to
+// survive, and is named by UID since its kind cannot be seen from here.
+func controllerThatRecreates(root cascade.Object, all, deleted []cascade.Object) string {
+	if root.Controller == "" {
+		return ""
+	}
+	for _, o := range deleted {
+		if o.UID == root.Controller {
+			return ""
+		}
+	}
+	for _, o := range all {
+		if o.UID == root.Controller {
+			return o.Target.Kind + "/" + o.Target.Name
+		}
+	}
+	return "controller " + string(root.Controller)
 }
 
 // namespaceMustExist refuses before any enumeration happens if ns does not
@@ -242,8 +350,10 @@ func isNamespaceResource(s string) bool {
 	return false
 }
 
-// destroyEffectsFromObjects converts a namespace's enumerated objects into
-// "destroys" effects, owner-first. It orders objs itself, via
+// destroyEffectsFromObjects converts the objects a delete takes into
+// "destroys" effects, owner-first, with explain supplying each one's
+// reason: "in the namespace" for a namespace delete, and for an object
+// delete whether it is the target or goes by garbage collection. It orders objs itself, via
 // cascade.Order, rather than trusting the caller to have already done so:
 // cascade.Enumerate's own output order is whatever
 // cluster.ListableNamespaced's resource list happens to be in, sorted
@@ -260,7 +370,7 @@ func isNamespaceResource(s string) bool {
 // actually happens here -- cascade.Order can be perfectly correct and
 // still never get invoked, and nothing in cascade's own tests can catch
 // that, because they call Order directly.
-func destroyEffectsFromObjects(objs []cascade.Object) []model.Effect {
+func destroyEffectsFromObjects(objs []cascade.Object, explain func(cascade.Object) string) []model.Effect {
 	ordered := cascade.Order(objs)
 	effects := make([]model.Effect, 0, len(ordered))
 	for _, o := range ordered {
@@ -271,7 +381,7 @@ func destroyEffectsFromObjects(objs []cascade.Object) []model.Effect {
 				Group: o.Target.Group, Version: o.Target.Version, Resource: o.Target.Resource,
 				Kind: o.Target.Kind, Namespace: o.Target.Namespace, Name: o.Target.Name,
 			},
-			Explanation: "in the namespace",
+			Explanation: explain(o),
 		})
 	}
 	return effects

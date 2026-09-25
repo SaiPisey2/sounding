@@ -35,6 +35,13 @@ The one comparison that matters: the same namespace grades TERMINAL when a
 bound PersistentVolume's `reclaimPolicy` is `Delete`, and COMPENSABLE when
 it is `Retain`. Nothing else about the namespace has to change.
 
+It also scores deleting one object: `sounding score "delete deployment api -n shop"`
+walks what the garbage collector would take with it -- ReplicaSets, Pods, and any
+claim the object owns -- following Kubernetes' rule that a dependent goes only
+when every one of its owners does. Deleting a Pod that a controller manages scores
+`REVERSIBLE`: the controller puts it back. An object delete needs `-n`; sounding
+cannot see your kubeconfig's default namespace and will not guess it.
+
 ## What it does not do
 
 - It executes nothing and never issues a write, a delete, or a patch against

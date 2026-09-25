@@ -366,3 +366,72 @@ func classOf(out string) string {
 	}
 	return ""
 }
+
+func podOf(t *testing.T, ns, selector string) string {
+	t.Helper()
+	// KUBECONFIG is set by make demo-test to the fixture's own file.
+	out, err := exec.Command("kubectl", "get", "pods", "-n", ns, "-l", selector, "-o", "jsonpath={.items[0].metadata.name}").Output()
+	if err != nil || len(out) == 0 {
+		t.Fatalf("finding a pod for %s: %v", selector, err)
+	}
+	return string(out)
+}
+
+func TestDeletingADeploymentScoresItsCascadeOnly(t *testing.T) {
+	out, code := score(t, "delete deployment api -n sounding-demo", "--all")
+	if code != 3 {
+		t.Errorf("exit = %d, want 3 (COMPENSABLE):\n%s", code, out)
+	}
+	for _, want := range []string{"Deployment/api", "ReplicaSet/", "Pod/"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s:\n%s", want, out)
+		}
+	}
+	for _, not := range []string{"ConfigMap/api-config", "pv-delete", "Service/api"} {
+		if strings.Contains(out, not) {
+			t.Errorf("%s is not owned by the deployment and must not appear:\n%s", not, out)
+		}
+	}
+}
+
+func TestDeletingAControlledPodIsReversible(t *testing.T) {
+	pod := podOf(t, "sounding-demo", "app=api")
+	out, code := score(t, "delete pod "+pod+" -n sounding-demo")
+	if code != 0 || !strings.Contains(out, "REVERSIBLE") {
+		t.Errorf("exit = %d, want 0 and REVERSIBLE:\n%s", code, out)
+	}
+	if !strings.Contains(out, "ReplicaSet/") {
+		t.Errorf("report must name the controller that recreates it:\n%s", out)
+	}
+}
+
+func TestDeletingADeletePolicyClaimIsTerminal(t *testing.T) {
+	out, code := score(t, "delete pvc data-delete -n sounding-demo")
+	if code != 4 || !strings.Contains(out, "pv-delete") {
+		t.Errorf("exit = %d, want 4 naming pv-delete:\n%s", code, out)
+	}
+}
+
+func TestObjectDeleteWithoutNamespaceRefuses(t *testing.T) {
+	out, code := score(t, "delete deployment api")
+	if code != 2 || !strings.Contains(out, "namespace") {
+		t.Errorf("exit = %d, want 2 naming the missing namespace:\n%s", code, out)
+	}
+}
+
+func TestDeletingAMissingObjectRefuses(t *testing.T) {
+	out, code := score(t, "delete deployment nope -n sounding-demo")
+	if code != 2 || !strings.Contains(out, "does not exist") {
+		t.Errorf("exit = %d, want 2:\n%s", code, out)
+	}
+}
+
+// resolveTarget wraps ErrRefused itself; Score wrapping it again compiles,
+// keeps exit 2, and prints "refused: refused: ..." -- which every
+// Contains-based refusal test above would still accept.
+func TestARefusalIsWrappedOnce(t *testing.T) {
+	out, code := score(t, "delete deployment api")
+	if code != 2 || strings.Count(out, "refused:") != 1 {
+		t.Errorf("exit = %d, want 2 with exactly one \"refused:\":\n%s", code, out)
+	}
+}
