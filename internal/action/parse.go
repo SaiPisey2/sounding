@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/SaiPisey2/sounding/internal/model"
+	"github.com/SaiPisey2/sounding/pkg/model"
 )
 
 var ErrAmbiguous = errors.New("ambiguous command")

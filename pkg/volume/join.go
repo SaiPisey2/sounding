@@ -12,9 +12,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/SaiPisey2/sounding/internal/cascade"
-	"github.com/SaiPisey2/sounding/internal/cluster"
-	"github.com/SaiPisey2/sounding/internal/model"
+	"github.com/SaiPisey2/sounding/pkg/cascade"
+	"github.com/SaiPisey2/sounding/pkg/cluster"
+	"github.com/SaiPisey2/sounding/pkg/model"
 )
 
 func classifyPV(claim, pv string, p corev1.PersistentVolumeReclaimPolicy) (model.Effect, model.Class) {

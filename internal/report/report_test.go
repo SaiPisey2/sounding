@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SaiPisey2/sounding/internal/model"
+	"github.com/SaiPisey2/sounding/pkg/model"
 )
 
 // manyEffects builds n "destroys" effects, all BasisComputed, named

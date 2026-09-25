@@ -1,4 +1,4 @@
-# PersistentVolumes are cluster-scoped, which is exactly why internal/volume
+# PersistentVolumes are cluster-scoped, which is exactly why pkg/volume
 # exists: enumerating a namespace never lists these on its own. hostPath is
 # used so binding needs no CSI driver -- each PV gets its own
 # storageClassName so the control plane's default binder cannot pair a claim

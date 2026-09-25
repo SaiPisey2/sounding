@@ -5,7 +5,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/SaiPisey2/sounding/internal/model"
+	"github.com/SaiPisey2/sounding/pkg/model"
 )
 
 func obj(name string, uid types.UID, owners ...types.UID) Object {

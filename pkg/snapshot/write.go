@@ -22,9 +22,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"github.com/SaiPisey2/sounding/internal/cascade"
-	"github.com/SaiPisey2/sounding/internal/cluster"
-	"github.com/SaiPisey2/sounding/internal/model"
+	"github.com/SaiPisey2/sounding/pkg/cascade"
+	"github.com/SaiPisey2/sounding/pkg/cluster"
+	"github.com/SaiPisey2/sounding/pkg/model"
 )
 
 // unsafeChar matches anything that is not safe to carry into a filename

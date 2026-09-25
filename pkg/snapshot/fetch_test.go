@@ -9,8 +9,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 
-	"github.com/SaiPisey2/sounding/internal/cluster"
-	"github.com/SaiPisey2/sounding/internal/model"
+	"github.com/SaiPisey2/sounding/pkg/cluster"
+	"github.com/SaiPisey2/sounding/pkg/model"
 )
 
 // A hand-built request path can be *cleaned* by path.Join rather than

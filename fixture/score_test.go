@@ -261,7 +261,7 @@ func TestObjectCountMatchesKnownConstruction(t *testing.T) {
 }
 
 // effectKinds names every model.Effect.Kind this build produces (see
-// internal/model/model.go's Effect and internal/volume/join.go's
+// pkg/model/model.go's Effect and pkg/volume/join.go's
 // classifyPV/classifyUnbound). effectIdentities uses it to tell an effect
 // line ("  destroys        Deployment/api        in the namespace") apart
 // from everything else --all prints: the title line, the header block, and
@@ -276,7 +276,7 @@ var effectKinds = map[string]bool{
 
 // effectIdentity pairs an effect line's KIND ("destroys", "unknown-data-fate",
 // ...) with the "Kind/Name" object token it names. Uniqueness must be
-// asserted on the PAIR, not the object token alone: internal/volume's
+// asserted on the PAIR, not the object token alone: pkg/volume's
 // classifyUnbound deliberately emits a second effect -- unknown-data-fate --
 // naming the very same PVC its own "destroys" effect already named (an
 // unbound PVC has no spec.volumeName, so nothing is known about what backs
@@ -322,7 +322,7 @@ func TestNoObjectIsListedTwice(t *testing.T) {
 		// A loop with nothing to iterate cannot fail -- the exact "cannot
 		// fail" class this test exists to remove. This fixture always seeds
 		// known effects, so zero parsed identities means effectIdentities
-		// (or effectKinds, if internal/model ever gains a Kind not listed
+		// (or effectKinds, if pkg/model ever gains a Kind not listed
 		// there) is broken, not that the namespace was genuinely empty.
 		t.Fatalf("parsed zero effect identities from the report:\n%s", out)
 	}

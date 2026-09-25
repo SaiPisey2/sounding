@@ -9,8 +9,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/SaiPisey2/sounding/internal/cluster"
-	"github.com/SaiPisey2/sounding/internal/model"
+	"github.com/SaiPisey2/sounding/pkg/cluster"
+	"github.com/SaiPisey2/sounding/pkg/model"
 )
 
 // Object is one live object as sounding sees it: enough to place it in the

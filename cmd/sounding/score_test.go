@@ -15,10 +15,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 
-	"github.com/SaiPisey2/sounding/internal/cascade"
-	"github.com/SaiPisey2/sounding/internal/cluster"
-	"github.com/SaiPisey2/sounding/internal/model"
 	"github.com/SaiPisey2/sounding/internal/report"
+	"github.com/SaiPisey2/sounding/pkg/cascade"
+	"github.com/SaiPisey2/sounding/pkg/cluster"
+	"github.com/SaiPisey2/sounding/pkg/model"
 )
 
 // model.Classify only ever raises a finding to the floor its weakest
@@ -289,7 +289,7 @@ func TestExcludedFromEffectsNamesTheRetainVolumeToo(t *testing.T) {
 	}
 }
 
-// An unbound PVC's unknown-data-fate effect (internal/volume/join.go's
+// An unbound PVC's unknown-data-fate effect (pkg/volume/join.go's
 // classifyUnbound) names the CLAIM itself, not a volume -- there is no PV
 // to name. The claim is namespaced, so cascade.Enumerate already walked it
 // into objs and snapshot.Write already wrote its manifest to the bundle

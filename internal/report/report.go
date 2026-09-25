@@ -9,7 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/SaiPisey2/sounding/internal/model"
+	"github.com/SaiPisey2/sounding/pkg/model"
 )
 
 // defaultEffectCap bounds how many effects the plain report lists before
@@ -244,7 +244,7 @@ func selectShown(effects []model.Effect, cap int) []bool {
 
 // summarizeBasis names the least reliable basis present -- unknown is worse
 // than declared is worse than computed, the same ordering basisFloor in
-// internal/model uses to set a class floor -- and counts how many effects
+// pkg/model uses to set a class floor -- and counts how many effects
 // share it. A reader needs both halves: which kind of evidence the weakest
 // part of this finding rests on, and how much of the finding that actually
 // is. When every effect shares one basis (the common case today; nothing

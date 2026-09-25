@@ -12,7 +12,7 @@ import (
 	metadatafake "k8s.io/client-go/metadata/fake"
 	clienttesting "k8s.io/client-go/testing"
 
-	"github.com/SaiPisey2/sounding/internal/cluster"
+	"github.com/SaiPisey2/sounding/pkg/cluster"
 )
 
 // PartialObjectMetadata carries only ObjectMeta -- no group, version,

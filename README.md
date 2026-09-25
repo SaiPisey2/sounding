@@ -40,7 +40,7 @@ it is `Retain`. Nothing else about the namespace has to change.
 - It executes nothing and never issues a write, a delete, or a patch against
   the cluster it scores. An AST census of every non-test file confirms the
   only client-go method calls are `Get`, `List` and `ListableNamespaced`;
-  `internal/cluster/readonly_test.go` mechanically rejects a known set of
+  `pkg/cluster/readonly_test.go` mechanically rejects a known set of
   mutating calls as a sanity check. It needs only `list` and `get` to do its
   job, and the credential you run it with should be scoped to exactly those
   two verbs -- `cluster.New` builds clients straight from whatever kubeconfig
@@ -177,6 +177,22 @@ make demo-down    # deletes the CRD, the namespaces, the PVs, and the cluster
 `demo-test` always rebuilds the binary first, and always runs with
 `-count=1`, so two consecutive runs are two real executions against the
 cluster, not one cached result reported twice.
+
+## Using it as a library
+
+The engine lives in `pkg/` and is importable:
+
+| Package | What it does |
+| --- | --- |
+| `pkg/cluster` | builds the read-only clients and resolves resources through discovery |
+| `pkg/cascade` | walks ownerReferences from a target to everything its deletion takes |
+| `pkg/volume` | joins PVCs to PVs and decides whether data is destroyed |
+| `pkg/model` | the effect and reversibility types every package shares |
+| `pkg/snapshot` | captures manifests and writes a restore bundle |
+
+`internal/action` (command parsing) and `internal/report` (CLI output) stay
+private. The read-only guard walks the whole module, so `pkg/` is held to
+`Get` and `List` like everything else. The API follows semver from v1.1.0.
 
 ## License
 

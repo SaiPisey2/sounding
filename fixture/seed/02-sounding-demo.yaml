@@ -99,7 +99,7 @@ spec:
 # and that no dynamic provisioner is registered for (see
 # 01-persistentvolumes.yaml), so it stays Pending forever with an empty
 # spec.volumeName -- an ordinary production state, not a fixture defect.
-# internal/volume's classifyUnbound emits a second effect for it
+# pkg/volume's classifyUnbound emits a second effect for it
 # (unknown-data-fate) naming the same PVC its own "destroys" effect already
 # names, which is exactly the case that forced
 # fixture/score_test.go's uniqueness guard to key on (effect kind, object)

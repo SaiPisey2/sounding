@@ -1,6 +1,6 @@
 # The negative case for the Retain/Delete flip: every PV this namespace
 # touches is Retain, so TestRetainOnlyNamespaceIsCompensable must see
-# COMPENSABLE, not TERMINAL -- the same join in internal/volume, the other
+# COMPENSABLE, not TERMINAL -- the same join in pkg/volume, the other
 # reclaim policy.
 apiVersion: v1
 kind: PersistentVolumeClaim

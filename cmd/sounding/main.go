@@ -20,12 +20,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/SaiPisey2/sounding/internal/action"
-	"github.com/SaiPisey2/sounding/internal/cascade"
-	"github.com/SaiPisey2/sounding/internal/cluster"
-	"github.com/SaiPisey2/sounding/internal/model"
 	"github.com/SaiPisey2/sounding/internal/report"
-	"github.com/SaiPisey2/sounding/internal/snapshot"
-	"github.com/SaiPisey2/sounding/internal/volume"
+	"github.com/SaiPisey2/sounding/pkg/cascade"
+	"github.com/SaiPisey2/sounding/pkg/cluster"
+	"github.com/SaiPisey2/sounding/pkg/model"
+	"github.com/SaiPisey2/sounding/pkg/snapshot"
+	"github.com/SaiPisey2/sounding/pkg/volume"
 )
 
 // errRefused and errOperational are the two non-success outcomes this
@@ -494,7 +494,7 @@ func destroyEffectsFromObjects(objs []cascade.Object) []model.Effect {
 // wants, every effect whose OBJECT is genuinely absent from the bundle --
 // not every effect volume.Join produced about uncertain data. destroys-data
 // and detaches-data always name the bound PersistentVolume (see
-// internal/volume/join.go's classifyPV), which is cluster-scoped and
+// pkg/volume/join.go's classifyPV), which is cluster-scoped and
 // therefore never one of the objects cascade.Enumerate walks or
 // snapshot.Write captures -- genuinely absent either way, whether the
 // reclaim policy destroys the data (destroys-data) or merely strands it
