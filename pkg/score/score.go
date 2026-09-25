@@ -53,6 +53,19 @@ type Options struct{ SnapshotDir string }
 // could break without anyone noticing, right up until two runs of the same
 // command, one with --snapshot and one without, printed two different
 // verdicts.
+//
+// act.Target.Group, when set, restricts which API group the target resource
+// is resolved in (see resolveTarget); nothing in that group matching the
+// resource is ErrRefused, never a fallback to another group.
+//
+// Finding.APICalls is the number of requests THIS call made: c.Calls is a
+// running total over the Clients' life, and Score reports the difference
+// between its value on return and on entry. That makes it correct for
+// sequential calls on one Clients only. A Clients is not safe for
+// concurrent scoring -- the counter is incremented without synchronisation
+// outside discovery, and two overlapping calls would each count the other's
+// requests -- so a caller scoring concurrently needs one Clients per
+// goroutine (cluster.NewForConfig is cheap to call again).
 func Score(ctx context.Context, c *cluster.Clients, act model.Action, opts Options) (model.Finding, error) {
 	// Captured before any request is made, not after enumeration finishes.
 	// The report's whole point in stating this is letting the caller judge
@@ -60,6 +73,7 @@ func Score(ctx context.Context, c *cluster.Clients, act model.Action, opts Optio
 	// after the scan's slowest, most-request-heavy phase already ran would
 	// under-report exactly the window that matters most on a large cluster.
 	scanned := time.Now().UTC()
+	callsAtStart := *c.Calls
 
 	resources, err := cluster.ListableNamespaced(ctx, c)
 	if err != nil {
@@ -155,7 +169,7 @@ func Score(ctx context.Context, c *cluster.Clients, act model.Action, opts Optio
 		return model.Finding{}, fmt.Errorf("%w: %v", ErrOperational, err)
 	}
 	finding.Scanned = scanned
-	finding.APICalls = int(*c.Calls)
+	finding.APICalls = callsSince(c, callsAtStart)
 
 	if opts.SnapshotDir != "" {
 		plan, err := snapshot.Write(ctx, c, opts.SnapshotDir, objs, excludedFromEffects(volEffects))
@@ -166,10 +180,17 @@ func Score(ctx context.Context, c *cluster.Clients, act model.Action, opts Optio
 		// snapshot.Write issues its own Get calls; the count the report
 		// prints must reflect what the scan actually cost, not just the
 		// enumeration and volume-join calls made before it.
-		finding.APICalls = int(*c.Calls)
+		finding.APICalls = callsSince(c, callsAtStart)
 	}
 
 	return finding, nil
+}
+
+// callsSince is how many requests c has counted since it read start. It is
+// what keeps Finding.APICalls to one Score call's cost when a caller reuses
+// a Clients for a second action, rather than the sum of every call so far.
+func callsSince(c *cluster.Clients, start int64) int {
+	return int(*c.Calls - start)
 }
 
 // classify composes the final class from the verb's own floor and the
@@ -270,15 +291,43 @@ type target struct {
 // caller is refused with the resource's real name and, when the string is
 // genuinely ambiguous, the real candidates -- never a plural nobody typed
 // that happens to match nothing.
+//
+// act.Target.Group, when set, restricts that resolution to the named API
+// group. The empty string means "any group", not "the core group": core
+// cannot be named on its own, so a resource string core shares with
+// another group stays ambiguous unless the other group is named.
 func resolveTarget(act model.Action, resources []cluster.Resource) (target, error) {
 	if act.Verb != "delete" {
 		return target{}, fmt.Errorf("%w: verb %q has no analyzer", ErrRefused, act.Verb)
 	}
 	if isNamespaceResource(act.Target.Resource) {
+		// Namespace is core/v1; a caller that names any other group
+		// means some other resource, and scoring a namespace delete for
+		// it would grade a command they did not write.
+		if act.Target.Group != "" {
+			return target{}, fmt.Errorf("%w: no resource in group %q matches %q", ErrRefused, act.Target.Group, act.Target.Resource)
+		}
 		if act.Target.Name == "" {
 			return target{}, fmt.Errorf("%w: delete namespace requires a name", ErrRefused)
 		}
 		return target{namespace: act.Target.Name}, nil
+	}
+	// A caller that names the group has already said which of two
+	// same-named resources it means -- core "events" or events.k8s.io
+	// "events" -- so only that group's resources are candidates. Nothing
+	// in the group matching is a refusal, never a fallback to another
+	// group's resource of the same name.
+	if act.Target.Group != "" {
+		var inGroup []cluster.Resource
+		for _, r := range resources {
+			if r.GVR.Group == act.Target.Group {
+				inGroup = append(inGroup, r)
+			}
+		}
+		if len(inGroup) == 0 {
+			return target{}, fmt.Errorf("%w: no resource in group %q matches %q", ErrRefused, act.Target.Group, act.Target.Resource)
+		}
+		resources = inGroup
 	}
 	resolved, err := cluster.ResolveResource(resources, act.Target.Resource)
 	if err != nil {

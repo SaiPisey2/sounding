@@ -32,6 +32,12 @@ import (
 // New builds, so a test can substitute k8s.io/client-go/kubernetes/fake's
 // clientset for it without a live server -- every real call site here only
 // ever reaches CoreV1(), which the interface already exposes in full.
+//
+// A Clients is not safe for concurrent scoring. Calls is incremented with a
+// plain *c.Calls++ everywhere but the discovery transport, so two scans
+// sharing one Clients race on it and each reports the other's requests. A
+// caller that scores concurrently needs one Clients per concurrent caller;
+// NewForConfig builds another from the same config.
 type Clients struct {
 	Discovery *discovery.DiscoveryClient
 	Dynamic   dynamic.Interface
@@ -79,6 +85,10 @@ func New(kubeconfig string) (*Clients, error) {
 // works on a copy: suppressServerWarnings and the discovery transport
 // wrapper both write to the config they are given, and a caller that keeps
 // using its own config for other requests must not find those changed.
+//
+// Each call returns an independent Clients with its own counter. It is not
+// safe for concurrent scoring (see Clients); call NewForConfig once per
+// concurrent caller instead of sharing one result between goroutines.
 func NewForConfig(cfg *rest.Config) (*Clients, error) {
 	cfg = rest.CopyConfig(cfg)
 	suppressServerWarnings(cfg)

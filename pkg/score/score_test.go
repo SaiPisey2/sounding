@@ -377,3 +377,46 @@ func TestExcludedFromEffectsDoesNotClaimAnAlreadyCapturedPVCIsMissing(t *testing
 		t.Fatalf("excludedFromEffects returned %v, want none -- the claim's own manifest is already in the bundle", excluded)
 	}
 }
+
+// Core and events.k8s.io both serve "events". Without a group the string is
+// ambiguous and refused; naming the group picks that group's resource.
+var twoGroupEvents = []cluster.Resource{
+	{GVR: schema.GroupVersionResource{Version: "v1", Resource: "events"}, Kind: "Event", Namespaced: true, SingularName: "event", ShortNames: []string{"ev"}},
+	{GVR: schema.GroupVersionResource{Group: "events.k8s.io", Version: "v1", Resource: "events"}, Kind: "Event", Namespaced: true, SingularName: "event"},
+	{GVR: schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, Kind: "Deployment", Namespaced: true, SingularName: "deployment"},
+}
+
+func TestResolveTargetWithoutAGroupRefusesAResourceTwoGroupsServe(t *testing.T) {
+	act := model.Action{Verb: "delete", Target: model.Target{Resource: "events", Name: "e", Namespace: "demo"}}
+	if _, err := resolveTarget(act, twoGroupEvents); !errors.Is(err, ErrRefused) {
+		t.Errorf("err = %v, want an ambiguity refusal", err)
+	}
+}
+
+func TestResolveTargetUsesTheNamedGroup(t *testing.T) {
+	act := model.Action{Verb: "delete", Target: model.Target{Group: "events.k8s.io", Resource: "events", Name: "e", Namespace: "demo"}}
+	tg, err := resolveTarget(act, twoGroupEvents)
+	if err != nil {
+		t.Fatalf("resolveTarget: %v", err)
+	}
+	if tg.object == nil || tg.object.GVR.Group != "events.k8s.io" {
+		t.Errorf("target = %+v, want the events.k8s.io resource", tg.object)
+	}
+}
+
+// A group that serves nothing, or serves resources but not this one, is a
+// refusal -- never a fallback to a same-named resource in another group.
+func TestResolveTargetRefusesWhenNothingInTheNamedGroupMatches(t *testing.T) {
+	for _, tc := range []struct{ group, resource string }{
+		{"example.com", "events"}, // group absent
+		{"apps", "events"},        // group present, resource not in it
+		{"events.k8s.io", "ev"},   // short name only core carries
+		{"apps", "namespaces"},    // namespace is core
+	} {
+		act := model.Action{Verb: "delete", Target: model.Target{Group: tc.group, Resource: tc.resource, Name: "e", Namespace: "demo"}}
+		tg, err := resolveTarget(act, twoGroupEvents)
+		if !errors.Is(err, ErrRefused) {
+			t.Errorf("group %q resource %q: target %+v err %v, want ErrRefused", tc.group, tc.resource, tg, err)
+		}
+	}
+}
