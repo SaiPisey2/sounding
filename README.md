@@ -196,11 +196,17 @@ The engine lives in `pkg/` and is importable:
 
 | Package | What it does |
 | --- | --- |
-| `pkg/cluster` | builds the read-only clients and resolves resources through discovery |
-| `pkg/cascade` | walks ownerReferences from a target to everything its deletion takes |
+| `pkg/score` | scores an action end to end: `score.Score(ctx, clients, action, opts)` |
+| `pkg/cluster` | builds the read-only clients (`New` from a kubeconfig, `NewForConfig` from a `rest.Config`) and resolves resources through discovery |
+| `pkg/cascade` | walks ownerReferences; `Descendants` follows the garbage collector's every-owner-gone rule |
 | `pkg/volume` | joins PVCs to PVs and decides whether data is destroyed |
+| `pkg/disruption` | ready backends each Service keeps, and which PodDisruptionBudgets a removal breaks |
+| `pkg/selector` | Services a label change disconnects; pods a selector change retargets |
 | `pkg/model` | the effect and reversibility types every package shares |
 | `pkg/snapshot` | captures manifests and writes a restore bundle |
+
+`disruption` and `selector` are library-only in this release; the CLI does
+not score `scale` or `patch` yet.
 
 `internal/action` (command parsing) and `internal/report` (CLI output) stay
 private. The read-only guard walks the whole module, so `pkg/` is held to
