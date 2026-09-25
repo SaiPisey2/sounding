@@ -71,6 +71,16 @@ func New(kubeconfig string) (*Clients, error) {
 		return nil, fmt.Errorf("loading cluster config: %w", err)
 	}
 
+	return NewForConfig(cfg)
+}
+
+// NewForConfig builds the clients from a config the caller already has --
+// an in-cluster service account, or a config carrying impersonation. It
+// works on a copy: suppressServerWarnings and the discovery transport
+// wrapper both write to the config they are given, and a caller that keeps
+// using its own config for other requests must not find those changed.
+func NewForConfig(cfg *rest.Config) (*Clients, error) {
+	cfg = rest.CopyConfig(cfg)
 	suppressServerWarnings(cfg)
 
 	var calls int64

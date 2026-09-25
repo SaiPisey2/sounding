@@ -1,6 +1,8 @@
 package cluster
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -85,5 +87,46 @@ func TestSuppressServerWarningsDisablesTheDefaultHandler(t *testing.T) {
 	suppressServerWarnings(cfg)
 	if _, ok := cfg.WarningHandler.(rest.NoWarnings); !ok {
 		t.Errorf("WarningHandler = %#v, want rest.NoWarnings{}", cfg.WarningHandler)
+	}
+}
+
+// blastgate hands sounding a config it keeps using for its own forwarding.
+// suppressServerWarnings writes to the config it is given; applied to the
+// caller's copy it would silently change how the caller's own clients log.
+func TestNewForConfigDoesNotMutateTheCallersConfig(t *testing.T) {
+	cfg := &rest.Config{Host: "https://127.0.0.1:1"}
+	c, err := NewForConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WarningHandler != nil {
+		t.Error("NewForConfig set WarningHandler on the caller's config")
+	}
+	if cfg.WrapTransport != nil {
+		t.Error("NewForConfig set WrapTransport on the caller's config")
+	}
+	if c.Calls == nil || c.Typed == nil || c.Dynamic == nil || c.Metadata == nil || c.Discovery == nil {
+		t.Fatalf("incomplete clients: %+v", c)
+	}
+}
+
+// The discovery transport is the only place discovery requests are counted
+// (see New's comment). Moving construction into NewForConfig must keep it.
+func TestNewForConfigStillCountsDiscoveryRequests(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"major":"1","minor":"37","gitVersion":"v1.37.0"}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewForConfig(&rest.Config{Host: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Discovery.ServerVersion(); err != nil {
+		t.Fatal(err)
+	}
+	if *c.Calls != 1 {
+		t.Errorf("calls = %d, want 1", *c.Calls)
 	}
 }
